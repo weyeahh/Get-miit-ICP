@@ -43,13 +43,23 @@ final class FileRateLimiter
             }
 
             $state['count'] = (int) ($state['count'] ?? 0) + 1;
-            rewind($handle);
-            ftruncate($handle, 0);
-            $written = fwrite($handle, (string) json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-            fflush($handle);
+            $json = json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (!is_string($json)) {
+                throw new MiitException('failed to encode rate limit state');
+            }
 
-            if ($written === false) {
-                throw new MiitException('failed to write rate limit state');
+            rewind($handle);
+            if (!ftruncate($handle, 0)) {
+                throw new MiitException('failed to truncate rate limit file');
+            }
+
+            $written = fwrite($handle, $json);
+            if ($written === false || $written !== strlen($json)) {
+                throw new MiitException('failed to write complete rate limit state');
+            }
+
+            if (!fflush($handle)) {
+                throw new MiitException('failed to flush rate limit state');
             }
 
             return $state['count'] <= $limit;

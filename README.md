@@ -96,14 +96,15 @@
 4. `QueryCache` 优先命中成功缓存或空结果缓存
 5. `QueryGuard` 仅在缓存未命中时执行上游频控与冷却判断
 6. `DomainQueryLock` 为同一 domain 提供 singleflight 查询锁
-7. 未命中缓存且拿到 domain 查询锁时，`MiitQueryService` 执行完整查询流程
-8. `AuthApi` 请求 `/auth` 获取 `Token`
-9. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-10. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
-11. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
-12. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
-13. 成功结果进入缓存并返回
-14. 上游异常则记录日志并返回脱敏后的错误响应
+7. 请求拿到 domain 查询锁后会再次检查缓存，避免锁等待后的重复上游查询
+8. 未命中缓存且拿到 domain 查询锁时，`MiitQueryService` 执行完整查询流程
+9. `AuthApi` 请求 `/auth` 获取 `Token`
+10. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
+11. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
+12. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
+13. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
+14. 成功结果进入缓存并返回
+15. 上游异常则记录日志并返回脱敏后的错误响应
 
 ### Module Responsibilities
 
@@ -284,12 +285,14 @@ HTTP status: `200`
 3. 增加全局、每 IP、每 domain 的限流。
 4. 上游失败后会进入短暂冷却，避免连续打上游。
 5. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿。
-6. 成功结果默认缓存 24 小时。
-7. 无备案记录默认缓存 30 分钟。
-8. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
-9. 客户端只看到脱敏后的错误消息，详细错误进入本地日志。
-10. 频控状态采用文件锁保护的原子读改写，降低并发下的计数漂移风险。
-11. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+6. 请求获得 domain 锁后会再次读取缓存，降低等待期间的重复上游访问。
+7. 成功结果默认缓存 24 小时。
+8. 无备案记录默认缓存 30 分钟。
+9. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
+10. 客户端只看到脱敏后的错误消息，详细错误进入本地日志。
+11. 频控状态采用文件锁保护的原子读改写，并校验编码、截断、写入长度和 flush 完整性。
+12. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+13. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
 
 ## Implementation Notes
 
@@ -302,6 +305,7 @@ HTTP status: `200`
 5. 列表查询后默认使用第一条结果获取详情。
 6. 只有在列表接口本身成功且结果为空时，才返回 `404`。
 7. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `500`。
+8. 入口层的组件初始化、缓存、限流、加锁和查询都走统一异常出口。
 
 ## Storage
 
