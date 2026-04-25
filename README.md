@@ -247,6 +247,156 @@ config/app.php
 
 若环境变量和配置文件同时存在，环境变量优先级更高。
 
+完整配置文件示例：
+
+```php
+<?php
+
+declare(strict_types=1);
+
+return [
+    'cache' => [
+        // 用于区分缓存结构版本。调整响应结构时可修改此值，使旧缓存自动失效。
+        'schema_version' => 'v1',
+
+        // 成功查询结果缓存时长，单位：秒。默认 86400，即 24 小时。
+        'success_ttl' => 86400,
+
+        // 空结果缓存时长，单位：秒。默认 1800，即 30 分钟。
+        'miss_ttl' => 1800,
+    ],
+
+    'ratelimit' => [
+        // 全局每秒允许进入上游查询链路的最大请求数。
+        'global_qps' => 3,
+
+        // 单个 IP 每分钟允许进入上游查询链路的最大请求数。
+        'ip_per_minute' => 20,
+
+        // 单个 domain 在指定窗口内允许进入上游查询链路的最大请求数。
+        'domain_per_window' => 3,
+
+        // domain 限流窗口大小，单位：秒。默认 300，即 5 分钟。
+        'domain_window_seconds' => 300,
+
+        // 单个 domain 在上游失败后进入冷却状态的时长，单位：秒。
+        'domain_cooldown_seconds' => 120,
+
+        // 全局冷却时长，单位：秒。用于上游异常后短时间减压。
+        'global_cooldown_seconds' => 15,
+
+        // 同一个 domain 的并发请求在等待已有查询结果时的最长等待时间，单位：秒。
+        'domain_wait_timeout_seconds' => 3,
+
+        // 等待期间轮询缓存的间隔，单位：毫秒。
+        'domain_wait_interval_milliseconds' => 250,
+    ],
+
+    'debug' => [
+        // 是否允许通过 URL 参数 debug=1 打开调试输出。
+        'allow_query_toggle' => false,
+    ],
+
+    'log' => [
+        // 日志详情最大截断长度。过长的上游错误会被裁剪，避免日志膨胀。
+        'max_detail_length' => 512,
+    ],
+];
+```
+
+配置项详细说明：
+
+1. `cache.schema_version`
+   用于控制缓存结构版本。只要这个值变化，旧缓存 key 就会自动失效。适合在响应字段调整、缓存结构变化时使用。
+
+2. `cache.success_ttl`
+   成功查询结果缓存时长，单位为秒。备案信息变更频率通常较低，默认 24 小时比较保守且能显著降低上游访问量。
+
+3. `cache.miss_ttl`
+   空结果缓存时长，单位为秒。默认 30 分钟。这个值不宜过长，否则会放大短期误判；也不宜过短，否则会反复打上游。
+
+4. `ratelimit.global_qps`
+   控制整个服务每秒最多有多少个请求进入真实上游链路。这个值越小，对上游越安全，但峰值承载能力越弱。
+
+5. `ratelimit.ip_per_minute`
+   控制单个来源 IP 在一分钟内最多触发多少次真实上游查询。适合限制恶意刷接口或误操作放量。
+
+6. `ratelimit.domain_per_window`
+   控制单个域名在限流窗口内可被查询的次数。适合防止热门 domain 或恶意 domain 被持续打上游。
+
+7. `ratelimit.domain_window_seconds`
+   指定 domain 限流窗口的长度。它和 `domain_per_window` 共同决定了单域的查询密度。
+
+8. `ratelimit.domain_cooldown_seconds`
+   单域在上游失败后进入冷却状态的时长。上游疑似风控或验证码连续失败时，这个值可以适当加大。
+
+9. `ratelimit.global_cooldown_seconds`
+   全局冷却时长。适合在上游明显异常时让整个服务短时间减速。
+
+10. `ratelimit.domain_wait_timeout_seconds`
+    singleflight 等待窗口。多个请求查询同一 domain 时，后续请求会等待已有查询写入缓存，而不是立即重复打上游。这个值过大可能占用 worker，过小则更容易直接返回 429。
+
+11. `ratelimit.domain_wait_interval_milliseconds`
+    等待期间轮询缓存的间隔。间隔越小，结果命中更及时，但轮询更频繁；间隔越大，CPU 压力更低，但返回延迟更高。
+
+12. `debug.allow_query_toggle`
+    控制是否允许外部通过 `?debug=1` 开启流程调试日志。生产环境通常建议保持 `false`。
+
+13. `log.max_detail_length`
+    控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
+
+边界行为说明：
+
+1. 所有整型配置都会经过 `AppConfig` 的上下界夹紧，不会直接相信配置文件中的原始值。
+2. 即使你在 `config/app.php` 中配置了 `0`、负数或极大值，系统仍会强制压回安全范围。
+3. 因此配置文件的作用是“提供期望值”，最终运行值仍以 `AppConfig` 的边界规则为准。
+
+环境变量覆盖说明：
+
+1. 配置文件作为默认值来源。
+2. 环境变量会覆盖配置文件中的同名项。
+3. 构造函数显式传入的 overrides 优先级最高。
+
+例如：
+
+```text
+MIIT_CACHE_SUCCESS_TTL=43200
+MIIT_RATE_LIMIT_GLOBAL_QPS=5
+MIIT_DEBUG_ALLOW_QUERY_TOGGLE=true
+```
+
+这些环境变量会分别覆盖：
+
+1. `cache.success_ttl`
+2. `ratelimit.global_qps`
+3. `debug.allow_query_toggle`
+
+推荐调整策略：
+
+1. 单机低流量场景：
+   可以适当提高 `cache.success_ttl`，降低 `global_qps`，优先保护上游。
+
+2. 内网受控调用场景：
+   可以适当提高 `ip_per_minute`，但仍建议保持较短的 `domain_cooldown_seconds`。
+
+3. 若上游明显风控：
+   优先调大：
+   - `domain_cooldown_seconds`
+   - `global_cooldown_seconds`
+   同时降低：
+   - `global_qps`
+   - `domain_per_window`
+
+4. 若并发等待过多：
+   优先缩短：
+   - `domain_wait_timeout_seconds`
+   或增大：
+   - `domain_wait_interval_milliseconds`
+
+5. 若日志膨胀明显：
+   优先降低：
+   - `log.max_detail_length`
+
 ## API
 
 ### Request
