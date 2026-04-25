@@ -19,7 +19,7 @@ return [
         'domain_wait_interval_milliseconds' => 250,
     ],
     'debug' => [
-        'allow_query_toggle' => false,
+        'enabled' => false,
     ],
     'log' => [
         'max_detail_length' => 512,

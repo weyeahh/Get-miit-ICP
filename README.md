@@ -217,11 +217,21 @@ http://127.0.0.1:8080/?domain=baidu.com
 
 调试模式：
 
-```text
-http://127.0.0.1:8080/?domain=baidu.com&debug=1
+在配置文件中开启：
+
+```php
+'debug' => [
+    'enabled' => true,
+],
 ```
 
-由于默认关闭 query 参数控制的 debug，除非在 `AppConfig` 中显式开启 `debug.allow_query_toggle`，否则 `debug=1` 不会生效。
+开启后，请求：
+
+```text
+http://127.0.0.1:8080/?domain=baidu.com
+```
+
+当前版本不再支持通过 URL 参数控制 debug，是否输出调试日志只由配置文件或环境变量决定。
 
 用户可调配置位于：
 
@@ -242,7 +252,7 @@ config/app.php
 9. `ratelimit.global_cooldown_seconds`
 10. `ratelimit.domain_wait_timeout_seconds`
 11. `ratelimit.domain_wait_interval_milliseconds`
-12. `debug.allow_query_toggle`
+12. `debug.enabled`
 13. `log.max_detail_length`
 
 若环境变量和配置文件同时存在，环境变量优先级更高。
@@ -293,8 +303,8 @@ return [
     ],
 
     'debug' => [
-        // 是否允许通过 URL 参数 debug=1 打开调试输出。
-        'allow_query_toggle' => false,
+        // 是否启用调试输出。启用后服务会把流程日志写到 stderr。
+        'enabled' => false,
     ],
 
     'log' => [
@@ -339,8 +349,8 @@ return [
 11. `ratelimit.domain_wait_interval_milliseconds`
     等待期间轮询缓存的间隔。间隔越小，结果命中更及时，但轮询更频繁；间隔越大，CPU 压力更低，但返回延迟更高。
 
-12. `debug.allow_query_toggle`
-    控制是否允许外部通过 `?debug=1` 开启流程调试日志。生产环境通常建议保持 `false`。
+12. `debug.enabled`
+    控制是否启用流程调试日志。启用后服务会将关键步骤日志输出到 stderr。生产环境通常建议保持 `false`。
 
 13. `log.max_detail_length`
     控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
@@ -362,14 +372,14 @@ return [
 ```text
 MIIT_CACHE_SUCCESS_TTL=43200
 MIIT_RATE_LIMIT_GLOBAL_QPS=5
-MIIT_DEBUG_ALLOW_QUERY_TOGGLE=true
+MIIT_DEBUG_ENABLED=true
 ```
 
 这些环境变量会分别覆盖：
 
 1. `cache.success_ttl`
 2. `ratelimit.global_qps`
-3. `debug.allow_query_toggle`
+3. `debug.enabled`
 
 推荐调整策略：
 
@@ -569,7 +579,7 @@ HTTP status: `200`
 7. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
 8. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
 9. 日志系统是辅助能力，失败时不会反向影响主响应契约。
-10. 调试输出默认关闭，只有配置允许时才接受 URL 参数启用。
+10. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
 11. 当前 `EnvironmentGuardTest` 已经真实调用 `EnvironmentGuard::assertRuntimeReady()`，会根据当前环境中是否存在 `curl`/`gd` 断言预检行为，而不再只是检查 `json`。
 
 ## Storage
@@ -613,7 +623,7 @@ HTTP status: `200`
 
 ## Debugging
 
-当配置允许且启用 `debug=1` 时，服务会输出流程日志，例如：
+当配置文件中的 `debug.enabled=true` 时，服务会输出流程日志，例如：
 
 1. `step=auth`
 2. `step=getCheckImagePoint`

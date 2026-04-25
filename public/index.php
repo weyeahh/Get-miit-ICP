@@ -40,7 +40,7 @@ try {
     $queryCache = new QueryCache(new FileCache(), $config);
     $guard = new QueryGuard(new FileRateLimiter(), $config);
     $domainQueryLock = new DomainQueryLock();
-    $debug = $config->bool('debug.allow_query_toggle') && isset($_GET['debug']) && $_GET['debug'] === '1';
+    $debug = $config->bool('debug.enabled');
 
     $domain = $normalizer->normalize($rawDomain);
 

@@ -68,7 +68,7 @@ final class AppConfig
             'MIIT_RATE_LIMIT_GLOBAL_COOLDOWN_SECONDS' => 'ratelimit.global_cooldown_seconds',
             'MIIT_RATE_LIMIT_DOMAIN_WAIT_TIMEOUT_SECONDS' => 'ratelimit.domain_wait_timeout_seconds',
             'MIIT_RATE_LIMIT_DOMAIN_WAIT_INTERVAL_MILLISECONDS' => 'ratelimit.domain_wait_interval_milliseconds',
-            'MIIT_DEBUG_ALLOW_QUERY_TOGGLE' => 'debug.allow_query_toggle',
+            'MIIT_DEBUG_ENABLED' => 'debug.enabled',
             'MIIT_LOG_MAX_DETAIL_LENGTH' => 'log.max_detail_length',
         ];
 
