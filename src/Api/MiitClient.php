@@ -85,7 +85,7 @@ final class MiitClient
         $decoded = json_decode($response, true);
 
         if (!is_array($decoded)) {
-            throw new MiitException('failed to decode JSON response');
+            throw new UpstreamException('failed to decode JSON response', 'upstream query failed');
         }
 
         return $decoded;
@@ -98,7 +98,7 @@ final class MiitClient
         $decoded = json_decode($response, true);
 
         if (!is_array($decoded)) {
-            throw new MiitException('failed to decode JSON response');
+            throw new UpstreamException('failed to decode JSON response', 'upstream query failed');
         }
 
         return $decoded;

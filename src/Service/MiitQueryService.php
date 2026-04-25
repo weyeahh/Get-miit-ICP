@@ -9,7 +9,6 @@ use Miit\Api\CaptchaApi;
 use Miit\Api\IcpApi;
 use Miit\Api\MiitClient;
 use Miit\Captcha\CaptchaSolver;
-use Miit\Config\AppConfig;
 use Miit\Exception\MiitException;
 use Miit\Exception\RecordNotFoundException;
 use Miit\Exception\UpstreamException;
@@ -30,7 +29,6 @@ final class MiitQueryService
         }
 
         $timestamp = time();
-        $config = new AppConfig();
         $client = new MiitClient($this->timeout);
         $authApi = new AuthApi($client);
         $captchaApi = new CaptchaApi($client);
@@ -50,7 +48,7 @@ final class MiitQueryService
         $bigImage = (string) ($params['bigImage'] ?? '');
         $height = (int) ($params['height'] ?? -1);
         if ($captchaUuid === '' || $bigImage === '' || $height < 0) {
-            throw new MiitException('captcha challenge params missing');
+            throw new UpstreamException('captcha challenge params missing', 'upstream query failed');
         }
 
         Debug::log($debug, 'step=getCheckImagePoint success=true captchaUUID=' . $captchaUuid . ' height=' . $height);
@@ -59,7 +57,7 @@ final class MiitQueryService
         $checkResponse = $solved['response'];
         $sign = (string) ($checkResponse['params'] ?? '');
         if ($sign === '') {
-            throw new MiitException('checkImage response missing sign');
+            throw new UpstreamException('checkImage response missing sign', 'upstream query failed');
         }
 
         $client->setSign($sign);
@@ -68,11 +66,11 @@ final class MiitQueryService
         Debug::log($debug, 'step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=' . $domain . ' serviceType=1');
         $queryResponse = $icpApi->queryByCondition($domain);
         if (($queryResponse['success'] ?? false) !== true || ($queryResponse['code'] ?? 0) !== 200) {
-            throw new MiitException(sprintf(
+            throw new UpstreamException(sprintf(
                 'queryByCondition rejected: code=%s msg=%s',
                 (string) ($queryResponse['code'] ?? ''),
                 (string) ($queryResponse['msg'] ?? '')
-            ));
+            ), 'upstream query failed');
         }
 
         $queryParams = is_array($queryResponse['params'] ?? null) ? $queryResponse['params'] : [];
@@ -86,7 +84,7 @@ final class MiitQueryService
         $domainId = (int) ($item['domainId'] ?? 0);
         $serviceId = (int) ($item['serviceId'] ?? 0);
         if ($mainId <= 0 || $domainId <= 0 || $serviceId <= 0) {
-            throw new MiitException('queryByCondition response missing valid identifiers');
+            throw new UpstreamException('queryByCondition response missing valid identifiers', 'upstream query failed');
         }
 
         Debug::log($debug, sprintf(
@@ -98,16 +96,16 @@ final class MiitQueryService
 
         $detailResponse = $icpApi->queryDetail($mainId, $domainId, $serviceId);
         if (($detailResponse['success'] ?? false) !== true || ($detailResponse['code'] ?? 0) !== 200) {
-            throw new MiitException(sprintf(
+            throw new UpstreamException(sprintf(
                 'detail response rejected: code=%s msg=%s',
                 (string) ($detailResponse['code'] ?? ''),
                 (string) ($detailResponse['msg'] ?? '')
-            ));
+            ), 'upstream query failed');
         }
 
         $detail = $detailResponse['params'] ?? null;
         if (!is_array($detail)) {
-            throw new MiitException('detail response params missing');
+            throw new UpstreamException('detail response params missing', 'upstream query failed');
         }
 
         return $detail;
@@ -123,17 +121,12 @@ final class MiitQueryService
                 continue;
             }
 
-            $value = strtolower((string) ($candidate['unitName'] ?? $candidate['domain'] ?? ''));
+            $value = strtolower((string) ($candidate['domain'] ?? ''));
             if ($value === strtolower($domain)) {
                 return $candidate;
             }
         }
 
-        $first = $list[0] ?? null;
-        if (!is_array($first)) {
-            throw new UpstreamException('queryByCondition returned invalid list item', 'upstream query failed');
-        }
-
-        return $first;
+        throw new RecordNotFoundException('no exact ICP record found for ' . $domain);
     }
 }

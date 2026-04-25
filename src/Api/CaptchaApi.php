@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Miit\Api;
 
 use Miit\Exception\MiitException;
+use Miit\Exception\UpstreamException;
 
 final class CaptchaApi
 {
@@ -20,11 +21,11 @@ final class CaptchaApi
         ]);
 
         if (($response['code'] ?? 0) !== 200 || ($response['success'] ?? false) !== true) {
-            throw new MiitException(sprintf(
+            throw new UpstreamException(sprintf(
                 'getCheckImagePoint rejected: code=%s msg=%s',
                 (string) ($response['code'] ?? ''),
                 (string) ($response['msg'] ?? '')
-            ));
+            ), 'upstream query failed');
         }
 
         return $response;

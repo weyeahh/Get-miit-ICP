@@ -21,6 +21,7 @@ use Miit\RateLimit\QueryGuard;
 use Miit\Service\MiitQueryService;
 use Miit\Support\ClientIp;
 use Miit\Support\DetailSanitizer;
+use Miit\Support\EnvironmentGuard;
 use Miit\Support\Logger;
 use Miit\Support\ResponseFormatter;
 use Miit\Validation\DomainNormalizer;
@@ -34,6 +35,7 @@ $mutex = null;
 
 try {
     $config = new AppConfig();
+    EnvironmentGuard::assertRuntimeReady();
     $normalizer = new DomainNormalizer();
     $queryCache = new QueryCache(new FileCache(), $config);
     $guard = new QueryGuard(new FileRateLimiter(), $config);

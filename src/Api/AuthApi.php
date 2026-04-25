@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Miit\Api;
 
 use Miit\Exception\MiitException;
+use Miit\Exception\UpstreamException;
 
 final class AuthApi
 {
@@ -23,16 +24,16 @@ final class AuthApi
         ]);
 
         if (($response['code'] ?? 0) !== 200 || ($response['success'] ?? false) !== true) {
-            throw new MiitException(sprintf(
+            throw new UpstreamException(sprintf(
                 'auth request rejected: code=%s msg=%s',
                 (string) ($response['code'] ?? ''),
                 (string) ($response['msg'] ?? '')
-            ));
+            ), 'upstream query failed');
         }
 
         $business = (string) (($response['params']['bussiness'] ?? ''));
         if ($business === '') {
-            throw new MiitException('auth response missing token');
+            throw new UpstreamException('auth response missing token', 'upstream query failed');
         }
 
         $this->client->setToken($business);
