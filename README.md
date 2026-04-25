@@ -19,8 +19,9 @@
 4. 保留滑块验证码识别与偏移试探逻辑。
 5. 增加 domain 规范化与基础格式校验。
 6. 增加全局、每 IP、每 domain 的文件限流与失败冷却。
-7. 增加成功缓存和空结果短缓存，减少重复请求上游。
-8. 错误对外脱敏，对内写入服务端日志。
+7. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿上游。
+8. 增加成功缓存和空结果短缓存，减少重复请求上游。
+9. 错误对外脱敏，对内写入服务端日志。
 
 ## Project Origin
 
@@ -33,7 +34,7 @@
 1. 从 Go 库改造为 PHP Web 服务。
 2. 按职责拆分为 `Api`、`Captcha`、`Service`、`Http`、`Cache`、`RateLimit`、`Validation` 等模块。
 3. 增加统一的 HTTP 入口与 JSON 响应格式。
-4. 增加频控、缓存、关键字段校验和错误脱敏。
+4. 增加频控、singleflight、缓存、关键字段校验和错误脱敏。
 
 ## Project Structure
 
@@ -61,6 +62,7 @@
 |  |- Http/
 |  |  `- JsonResponse.php
 |  |- RateLimit/
+|  |  |- DomainQueryLock.php
 |  |  |- FileRateLimiter.php
 |  |  `- QueryGuard.php
 |  |- Service/
@@ -69,6 +71,7 @@
 |  |  |- AppPaths.php
 |  |  |- ClientIp.php
 |  |  |- Debug.php
+|  |  |- FileMutex.php
 |  |  |- Logger.php
 |  |  `- ResponseFormatter.php
 |  |- Validation/
@@ -90,16 +93,17 @@
 1. 客户端发起请求：`GET /?domain=example.com`
 2. `public/index.php` 读取原始参数
 3. `DomainNormalizer` 执行域名规范化与校验
-4. `QueryGuard` 执行全局、IP、domain 频控与冷却判断
-5. `QueryCache` 优先命中成功缓存或空结果缓存
-6. 未命中缓存时，`MiitQueryService` 执行完整查询流程
-7. `AuthApi` 请求 `/auth` 获取 `Token`
-8. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-9. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
-10. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
-11. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
-12. 成功结果进入缓存并返回
-13. 上游异常则记录日志并返回脱敏后的错误响应
+4. `QueryCache` 优先命中成功缓存或空结果缓存
+5. `QueryGuard` 仅在缓存未命中时执行上游频控与冷却判断
+6. `DomainQueryLock` 为同一 domain 提供 singleflight 查询锁
+7. 未命中缓存且拿到 domain 查询锁时，`MiitQueryService` 执行完整查询流程
+8. `AuthApi` 请求 `/auth` 获取 `Token`
+9. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
+10. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
+11. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
+12. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
+13. 成功结果进入缓存并返回
+14. 上游异常则记录日志并返回脱敏后的错误响应
 
 ### Module Responsibilities
 
@@ -112,10 +116,13 @@
 3. `src/RateLimit/QueryGuard.php`
    负责全局、IP、domain 限流和失败冷却策略。
 
-4. `src/Cache/QueryCache.php`
+4. `src/RateLimit/DomainQueryLock.php`
+   负责同一 domain 查询过程的 singleflight 控制。
+
+5. `src/Cache/QueryCache.php`
    负责成功缓存与空结果缓存。
 
-5. `src/Api/MiitClient.php`
+6. `src/Api/MiitClient.php`
    通用 HTTP 客户端，维护请求头、Cookie 和超时控制。
 
 6. `src/Api/AuthApi.php`
@@ -144,6 +151,7 @@
 2. 启用 `curl` 扩展。
 3. 启用 `gd` 扩展。
 4. 运行用户需要对项目目录下的 `storage/` 有读写权限。
+5. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
 
@@ -272,12 +280,16 @@ HTTP status: `200`
 为了降低上游风控风险，当前版本增加了治理层：
 
 1. domain 参数进入主链路前会做规范化与格式校验。
-2. 增加全局、每 IP、每 domain 的限流。
-3. 上游失败后会进入短暂冷却，避免连续打上游。
-4. 成功结果默认缓存 24 小时。
-5. 无备案记录默认缓存 30 分钟。
-6. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
-7. 客户端只看到脱敏后的错误消息，详细错误进入本地日志。
+2. 缓存优先于上游频控，缓存命中不会消耗上游配额。
+3. 增加全局、每 IP、每 domain 的限流。
+4. 上游失败后会进入短暂冷却，避免连续打上游。
+5. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿。
+6. 成功结果默认缓存 24 小时。
+7. 无备案记录默认缓存 30 分钟。
+8. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
+9. 客户端只看到脱敏后的错误消息，详细错误进入本地日志。
+10. 频控状态采用文件锁保护的原子读改写，降低并发下的计数漂移风险。
+11. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
 
 ## Implementation Notes
 
@@ -306,6 +318,8 @@ HTTP status: `200`
 
 这些文件都是本地文件实现，适合单机部署。如果你在多实例环境中运行，建议后续替换为 Redis 等共享存储。
 
+项目默认通过 `.gitignore` 忽略 `storage/` 下的运行产物，并使用 `.gitkeep` 保留必要目录结构。
+
 ## Limitations
 
 该项目本质上仍然依赖目标站点当前的协议和验证码样式，因此存在天然脆弱性。
@@ -314,9 +328,10 @@ HTTP status: `200`
 
 1. 如果工信部接口字段发生变化，服务可能失效。
 2. 如果验证码颜色、形状或返回数据结构改变，识别逻辑可能失效。
-3. 当前缓存与频控基于本地文件，适合单机，不适合直接横向扩容。
+3. 当前缓存、锁和频控基于本地文件，适合单机，不适合直接横向扩容。
 4. 列表结果默认取第一条记录，未做复杂筛选。
 5. 当前没有 stale 数据回退策略，500 时不会回放历史成功缓存。
+6. 同域 singleflight 当前是短等待后回读缓存的模式，不是长轮询队列。
 
 这意味着该项目更适合作为特定场景下的工程化工具，而非长期稳定的官方兼容方案。
 

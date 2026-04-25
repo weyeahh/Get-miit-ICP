@@ -1,0 +1,10 @@
+/storage/*
+!/storage/.gitkeep
+!/storage/cache/
+!/storage/cache/.gitkeep
+!/storage/logs/
+!/storage/logs/.gitkeep
+!/storage/ratelimit/
+!/storage/ratelimit/.gitkeep
+!/storage/locks/
+!/storage/locks/.gitkeep

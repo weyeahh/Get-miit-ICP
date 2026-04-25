@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Miit\RateLimit;
 
+use Miit\Exception\MiitException;
 use Miit\Support\AppPaths;
 
 final class FileRateLimiter
@@ -12,31 +13,61 @@ final class FileRateLimiter
 
     public function __construct(?string $directory = null)
     {
-        $this->directory = AppPaths::ensureDir($directory ?? AppPaths::storagePath('ratelimit'));
+        $this->directory = AppPaths::ensureDir($directory ?? AppPaths::storagePath('ratelimit'), true);
     }
 
     public function hit(string $key, int $windowSeconds, int $limit): bool
     {
         $file = $this->directory . '/' . sha1($key) . '.json';
-        $state = $this->read($file);
-        $now = time();
-
-        if (($state['window_started_at'] ?? 0) + $windowSeconds <= $now) {
-            $state = ['window_started_at' => $now, 'count' => 0];
+        $handle = fopen($file, 'c+');
+        if ($handle === false) {
+            throw new MiitException('failed to open rate limit file');
         }
 
-        $state['count'] = (int) ($state['count'] ?? 0) + 1;
-        file_put_contents($file, (string) json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            throw new MiitException('failed to lock rate limit file');
+        }
 
-        return $state['count'] <= $limit;
+        try {
+            $raw = stream_get_contents($handle);
+            $state = [];
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                $state = is_array($decoded) ? $decoded : [];
+            }
+
+            $now = time();
+            if (($state['window_started_at'] ?? 0) + $windowSeconds <= $now) {
+                $state = ['window_started_at' => $now, 'count' => 0];
+            }
+
+            $state['count'] = (int) ($state['count'] ?? 0) + 1;
+            rewind($handle);
+            ftruncate($handle, 0);
+            $written = fwrite($handle, (string) json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            fflush($handle);
+
+            if ($written === false) {
+                throw new MiitException('failed to write rate limit state');
+            }
+
+            return $state['count'] <= $limit;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     public function setCooldown(string $key, int $ttlSeconds): void
     {
         $file = $this->directory . '/' . sha1('cooldown:' . $key) . '.json';
-        file_put_contents($file, (string) json_encode([
+        $written = file_put_contents($file, (string) json_encode([
             'cooldown_until' => time() + max(1, $ttlSeconds),
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+        if ($written === false) {
+            throw new MiitException('failed to write cooldown state');
+        }
     }
 
     public function inCooldown(string $key): bool

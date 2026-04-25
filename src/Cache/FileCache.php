@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Miit\Cache;
 
+use Miit\Exception\MiitException;
 use Miit\Support\AppPaths;
 
 final class FileCache
@@ -12,7 +13,7 @@ final class FileCache
 
     public function __construct(?string $directory = null)
     {
-        $this->directory = AppPaths::ensureDir($directory ?? AppPaths::storagePath('cache'));
+        $this->directory = AppPaths::ensureDir($directory ?? AppPaths::storagePath('cache'), true);
     }
 
     /** @return array<string, mixed>|null */
@@ -51,6 +52,9 @@ final class FileCache
             'value' => $value,
         ];
 
-        file_put_contents($file, (string) json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+        $written = file_put_contents($file, (string) json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+        if ($written === false) {
+            throw new MiitException('failed to write cache file');
+        }
     }
 }
