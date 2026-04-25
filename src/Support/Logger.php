@@ -21,17 +21,44 @@ final class Logger
     /** @param array<string, mixed> $context */
     private static function write(string $level, string $message, array $context): void
     {
-        $dir = AppPaths::ensureDir(AppPaths::storagePath('logs'));
-        $file = $dir . '/app-' . date('Y-m-d') . '.log';
-        $line = json_encode([
-            'time' => date(DATE_ATOM),
-            'level' => $level,
-            'message' => $message,
-            'context' => $context,
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        try {
+            $dir = AppPaths::ensureDir(AppPaths::storagePath('logs'), true);
+            $file = $dir . '/app-' . date('Y-m-d') . '.log';
+            $line = json_encode([
+                'time' => date(DATE_ATOM),
+                'level' => $level,
+                'message' => $message,
+                'context' => $context,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-        if ($line !== false) {
-            file_put_contents($file, $line . PHP_EOL, FILE_APPEND | LOCK_EX);
+            if ($line === false) {
+                return;
+            }
+
+            @file_put_contents($file, $line . PHP_EOL, FILE_APPEND | LOCK_EX);
+        } catch (\Throwable) {
+            self::writeStderr($level, $message, $context);
+        }
+    }
+
+    /** @param array<string, mixed> $context */
+    private static function writeStderr(string $level, string $message, array $context): void
+    {
+        try {
+            $line = json_encode([
+                'time' => date(DATE_ATOM),
+                'level' => $level,
+                'message' => $message,
+                'context' => $context,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            if ($line === false) {
+                return;
+            }
+
+            @file_put_contents('php://stderr', $line . PHP_EOL);
+        } catch (\Throwable) {
+            // Intentionally swallow logging failures.
         }
     }
 }

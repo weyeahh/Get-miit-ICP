@@ -1,0 +1,21 @@
+{
+  "name": "weyeahh/get-miit-icp",
+  "description": "PHP MIIT ICP query service reconstructed from fuckmiit.",
+  "type": "project",
+  "require": {
+    "php": ">=8.1",
+    "ext-curl": "*",
+    "ext-gd": "*",
+    "ext-json": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Miit\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Miit\\Tests\\": "tests/"
+    }
+  }
+}

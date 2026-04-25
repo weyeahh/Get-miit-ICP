@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Miit\Support;
 
-use Miit\Exception\MiitException;
+use Miit\Exception\EnvironmentException;
 
 final class AppPaths
 {
@@ -20,12 +20,12 @@ final class AppPaths
     {
         if (!is_dir($path)) {
             if (!mkdir($path, 0777, true) && !is_dir($path)) {
-                throw new MiitException('failed to create directory: ' . $path);
+                throw new EnvironmentException('failed to create directory: ' . $path, 'service environment is not ready');
             }
         }
 
         if ($requireWritable && !is_writable($path)) {
-            throw new MiitException('directory is not writable: ' . $path);
+            throw new EnvironmentException('directory is not writable: ' . $path, 'service environment is not ready');
         }
 
         return $path;

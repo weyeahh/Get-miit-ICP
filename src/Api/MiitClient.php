@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Miit\Api;
 
 use Miit\Exception\MiitException;
+use Miit\Exception\UpstreamException;
+use Miit\Support\DetailSanitizer;
+use Miit\Config\AppConfig;
 
 final class MiitClient
 {
@@ -21,9 +24,11 @@ final class MiitClient
 
     /** @var array<string, string> */
     private array $headers;
+    private AppConfig $config;
 
     public function __construct(private readonly int $timeout = self::DEFAULT_TIMEOUT)
     {
+        $this->config = new AppConfig();
         $this->cookieFile = tempnam(sys_get_temp_dir(), 'miit_cookie_');
         if ($this->cookieFile === false) {
             throw new MiitException('failed to create temporary cookie file');
@@ -150,15 +155,16 @@ final class MiitClient
         curl_close($ch);
 
         if ($errno !== 0) {
-            throw new MiitException('request failed: ' . $error);
+            throw new UpstreamException('request failed: ' . $error, 'upstream query failed');
         }
 
         if (!is_string($response)) {
-            throw new MiitException('request failed: empty response');
+            throw new UpstreamException('request failed: empty response', 'upstream query failed');
         }
 
         if ($statusCode !== 200) {
-            throw new MiitException('request failed: status=' . $statusCode . ' body=' . trim($response));
+            $detail = DetailSanitizer::truncate('request failed: status=' . $statusCode . ' body=' . trim($response), $this->config);
+            throw new UpstreamException($detail, 'upstream query failed');
         }
 
         return $response;

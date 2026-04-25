@@ -14,7 +14,7 @@
 ## Features
 
 1. 基于 HTTP GET 的简单调用方式。
-2. 纯 PHP 实现，不依赖 Composer。
+2. 纯 PHP 实现，不依赖 Composer 运行，但提供 `composer.json` 用于环境约束与自动加载声明。
 3. 内置工信部接口请求头、Cookie 会话、鉴权流程。
 4. 保留滑块验证码识别与偏移试探逻辑。
 5. 增加 domain 规范化与基础格式校验。
@@ -22,6 +22,8 @@
 7. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿上游。
 8. 增加成功缓存和空结果短缓存，减少重复请求上游。
 9. 错误对外脱敏，对内写入服务端日志。
+10. 日志写入采用 best-effort 策略，日志失败不会破坏 API 响应。
+11. 增加缓存 schema version、响应编码保护、错误分类与基础测试骨架。
 
 ## Project Origin
 
@@ -32,9 +34,9 @@
 本仓库在其基础上进行了以下重构：
 
 1. 从 Go 库改造为 PHP Web 服务。
-2. 按职责拆分为 `Api`、`Captcha`、`Service`、`Http`、`Cache`、`RateLimit`、`Validation` 等模块。
+2. 按职责拆分为 `Api`、`Captcha`、`Service`、`Http`、`Cache`、`RateLimit`、`Validation`、`Config` 等模块。
 3. 增加统一的 HTTP 入口与 JSON 响应格式。
-4. 增加频控、singleflight、缓存、关键字段校验和错误脱敏。
+4. 增加频控、singleflight、缓存、关键字段校验、错误分类和错误脱敏。
 
 ## Project Structure
 
@@ -54,10 +56,16 @@
 |  |- Captcha/
 |  |  |- CaptchaSolver.php
 |  |  `- Rect.php
+|  |- Config/
+|  |  `- AppConfig.php
 |  |- Exception/
+|  |  |- EnvironmentException.php
+|  |  |- InternalErrorException.php
 |  |  |- MiitException.php
 |  |  |- RateLimitException.php
 |  |  |- RecordNotFoundException.php
+|  |  |- StorageException.php
+|  |  |- UpstreamException.php
 |  |  `- ValidationException.php
 |  |- Http/
 |  |  `- JsonResponse.php
@@ -71,6 +79,7 @@
 |  |  |- AppPaths.php
 |  |  |- ClientIp.php
 |  |  |- Debug.php
+|  |  |- DetailSanitizer.php
 |  |  |- FileMutex.php
 |  |  |- Logger.php
 |  |  `- ResponseFormatter.php
@@ -79,8 +88,14 @@
 |  `- bootstrap.php
 |- storage/
 |  |- cache/
+|  |- locks/
 |  |- logs/
 |  `- ratelimit/
+|- tests/
+|  |- bootstrap.php
+|  |- DomainNormalizerTest.php
+|  `- run.php
+|- composer.json
 `- README.md
 ```
 
@@ -91,58 +106,68 @@
 项目执行链路如下：
 
 1. 客户端发起请求：`GET /?domain=example.com`
-2. `public/index.php` 读取原始参数
+2. `public/index.php` 读取原始参数并初始化配置对象 `AppConfig`
 3. `DomainNormalizer` 执行域名规范化与校验
 4. `QueryCache` 优先命中成功缓存或空结果缓存
-5. `QueryGuard` 仅在缓存未命中时执行上游频控与冷却判断
-6. `DomainQueryLock` 为同一 domain 提供 singleflight 查询锁
-7. 请求拿到 domain 查询锁后会再次检查缓存，避免锁等待后的重复上游查询
-8. 未命中缓存且拿到 domain 查询锁时，`MiitQueryService` 执行完整查询流程
+5. `DomainQueryLock` 为同一 domain 提供 singleflight 查询锁
+6. 获取 domain 锁成功后再次读取缓存，避免锁等待后的重复上游查询
+7. 只有真正准备访问上游时，`QueryGuard` 才执行全局、IP、domain 频控与冷却判断
+8. `MiitQueryService` 执行完整查询流程
 9. `AuthApi` 请求 `/auth` 获取 `Token`
 10. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
 11. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
 12. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
-13. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
-14. 成功结果进入缓存并返回
-15. 上游异常则记录日志并返回脱敏后的错误响应
+13. `MiitQueryService` 对列表结果执行精确匹配优先选择
+14. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
+15. 成功结果进入带 schema version 的缓存并返回
+16. 失败按异常类型分类，分别映射为参数错误、频控错误、存储错误、上游错误或内部错误
 
 ### Module Responsibilities
 
 1. `public/index.php`
-   HTTP 入口，负责参数读取、限流、缓存命中和响应输出。
+   HTTP 入口，负责参数读取、配置加载、缓存命中、singleflight、限流、错误分类和响应输出。
 
 2. `src/Validation/DomainNormalizer.php`
    负责域名规范化、长度限制、字符合法性和标签校验。
 
-3. `src/RateLimit/QueryGuard.php`
+3. `src/Config/AppConfig.php`
+   负责缓存 TTL、限流阈值、singleflight 等待时间、日志截断长度、debug 开关等配置的集中定义。
+
+4. `src/RateLimit/QueryGuard.php`
    负责全局、IP、domain 限流和失败冷却策略。
 
-4. `src/RateLimit/DomainQueryLock.php`
+5. `src/RateLimit/DomainQueryLock.php`
    负责同一 domain 查询过程的 singleflight 控制。
 
-5. `src/Cache/QueryCache.php`
-   负责成功缓存与空结果缓存。
+6. `src/Cache/QueryCache.php`
+   负责成功缓存与空结果缓存，并通过 schema version 隔离未来结构变化。
 
-6. `src/Api/MiitClient.php`
-   通用 HTTP 客户端，维护请求头、Cookie 和超时控制。
+7. `src/Cache/FileCache.php`
+   负责缓存文件的加锁读取和完整性校验写入。
 
-6. `src/Api/AuthApi.php`
+8. `src/Api/MiitClient.php`
+   通用 HTTP 客户端，维护请求头、Cookie、超时控制和上游错误截断。
+
+9. `src/Api/AuthApi.php`
    封装 `auth` 接口和 `authKey` 生成逻辑。
 
-7. `src/Api/CaptchaApi.php`
-   封装验证码获取与校验接口。
+10. `src/Api/CaptchaApi.php`
+    封装验证码获取与校验接口。
 
-8. `src/Captcha/CaptchaSolver.php`
-   验证码识别核心模块，负责读取图片、识别缺口、枚举候选横坐标、调用校验接口。
+11. `src/Captcha/CaptchaSolver.php`
+    验证码识别核心模块，负责读取图片、识别缺口、枚举候选横坐标、调用校验接口。
 
-9. `src/Api/IcpApi.php`
-   封装备案列表和详情查询接口。
+12. `src/Api/IcpApi.php`
+    封装备案列表和详情查询接口。
 
-10. `src/Service/MiitQueryService.php`
-    业务编排层，串起完整的 MIIT 查询流程，并补充关键字段校验。
+13. `src/Service/MiitQueryService.php`
+    业务编排层，串起完整的 MIIT 查询流程，并补充关键字段校验和列表精确匹配优先策略。
 
-11. `src/Support/Logger.php`
-    负责将详细错误写入本地日志，而不是直接返回客户端。
+14. `src/Support/Logger.php`
+    负责将详细错误写入本地日志，并在日志失败时降级到 `php://stderr`。
+
+15. `src/Http/JsonResponse.php`
+    负责响应输出，并在 JSON 编码失败时输出保底错误 JSON。
 
 ## Requirements
 
@@ -151,8 +176,9 @@
 1. PHP 8.1 或更高版本。
 2. 启用 `curl` 扩展。
 3. 启用 `gd` 扩展。
-4. 运行用户需要对项目目录下的 `storage/` 有读写权限。
-5. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
+4. 启用 `json` 扩展。
+5. 运行用户需要对项目目录下的 `storage/` 有读写权限。
+6. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
 
@@ -176,6 +202,8 @@ http://127.0.0.1:8080/?domain=baidu.com
 http://127.0.0.1:8080/?domain=baidu.com&debug=1
 ```
 
+由于默认关闭 query 参数控制的 debug，除非在 `AppConfig` 中显式开启 `debug.allow_query_toggle`，否则 `debug=1` 不会生效。
+
 ## API
 
 ### Request
@@ -192,7 +220,7 @@ Query Parameters:
    要查询的域名。系统会自动执行规范化与格式校验。
 
 2. `debug` optional
-   传入 `1` 时输出调试日志到标准错误流。
+   仅在配置允许时启用调试日志输出。
 
 ### Success Response
 
@@ -259,7 +287,33 @@ HTTP status: `200`
   "message": "upstream query failed",
   "data": {
     "domain": "example.com",
-    "detail": "the upstream service rejected or failed the query"
+    "detail": "upstream query failed"
+  }
+}
+```
+
+本地存储或环境未就绪时，HTTP status: `500`
+
+```json
+{
+  "code": 500,
+  "message": "service environment is not ready",
+  "data": {
+    "domain": "example.com",
+    "detail": "service environment is not ready"
+  }
+}
+```
+
+内部错误时，HTTP status: `500`
+
+```json
+{
+  "code": 500,
+  "message": "internal server error",
+  "data": {
+    "domain": "example.com",
+    "detail": "the service encountered an internal error"
   }
 }
 ```
@@ -282,17 +336,24 @@ HTTP status: `200`
 
 1. domain 参数进入主链路前会做规范化与格式校验。
 2. 缓存优先于上游频控，缓存命中不会消耗上游配额。
-3. 增加全局、每 IP、每 domain 的限流。
-4. 上游失败后会进入短暂冷却，避免连续打上游。
-5. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿。
-6. 请求获得 domain 锁后会再次读取缓存，降低等待期间的重复上游访问。
-7. 成功结果默认缓存 24 小时。
-8. 无备案记录默认缓存 30 分钟。
-9. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
-10. 客户端只看到脱敏后的错误消息，详细错误进入本地日志。
-11. 频控状态采用文件锁保护的原子读改写，并校验编码、截断、写入长度和 flush 完整性。
-12. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
-13. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
+3. 同一 domain 的并发请求先竞争 singleflight 锁，只有真正准备访问上游的请求才在锁内执行频控计数，避免“未出站先扣额度”的限流语义污染。
+4. 全局、IP、domain 限流都通过 `AppConfig` 配置化，而不是硬编码在业务逻辑里。
+5. 上游失败后会进入短暂冷却，避免连续打上游。
+6. `FileRateLimiter` 的频控窗口文件和 cooldown 文件都使用文件锁保护，读取 cooldown 时也加共享锁，避免并发下漏读冷却状态。
+7. `FileCache` 读取缓存时使用共享锁，写入缓存时使用独占锁，并校验编码、截断、写入长度和 flush 完整性，避免并发读写读到半写入内容。
+8. 同域请求在拿到 domain 锁后会再次读取 success/miss cache，降低锁等待期间的重复上游访问。
+9. 同域等待窗口不再固定为 2 秒，而是通过配置化的超时和轮询间隔控制，默认与上游超时更接近。
+10. 成功结果默认缓存 24 小时。
+11. 无备案记录默认缓存 30 分钟，并且只有在列表接口成功、列表为空的前提下才会写入 miss cache。
+12. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
+13. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
+14. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配的项，降低错取详情的风险。
+15. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
+16. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积。
+17. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
+18. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，避免空响应或破损响应。
+19. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+20. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
 
 ## Implementation Notes
 
@@ -302,10 +363,12 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 列表查询后默认使用第一条结果获取详情。
+5. 列表查询后优先进行精确匹配，再回退到第一条。
 6. 只有在列表接口本身成功且结果为空时，才返回 `404`。
-7. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `500`。
-8. 入口层的组件初始化、缓存、限流、加锁和查询都走统一异常出口。
+7. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
+8. 入口层的组件初始化、缓存、锁、限流和查询都走统一异常出口。
+9. 日志系统是辅助能力，失败时不会反向影响主响应契约。
+10. 调试输出默认关闭，只有配置允许时才接受 URL 参数启用。
 
 ## Storage
 
@@ -317,7 +380,10 @@ HTTP status: `200`
 2. `storage/ratelimit/`
    保存频控窗口与冷却状态。
 
-3. `storage/logs/`
+3. `storage/locks/`
+   保存 singleflight 锁文件。
+
+4. `storage/logs/`
    保存结构化错误日志。
 
 这些文件都是本地文件实现，适合单机部署。如果你在多实例环境中运行，建议后续替换为 Redis 等共享存储。
@@ -333,15 +399,16 @@ HTTP status: `200`
 1. 如果工信部接口字段发生变化，服务可能失效。
 2. 如果验证码颜色、形状或返回数据结构改变，识别逻辑可能失效。
 3. 当前缓存、锁和频控基于本地文件，适合单机，不适合直接横向扩容。
-4. 列表结果默认取第一条记录，未做复杂筛选。
+4. 列表结果虽然增加了精确匹配优先，但仍受上游字段质量影响。
 5. 当前没有 stale 数据回退策略，500 时不会回放历史成功缓存。
-6. 同域 singleflight 当前是短等待后回读缓存的模式，不是长轮询队列。
+6. 同域 singleflight 当前是等待后回读缓存的模式，不是长轮询队列或作业系统。
+7. 仓库附带了 `composer.json` 和基础测试骨架，但当前环境若没有 PHP CLI 仍无法做本机语法与测试验证。
 
 这意味着该项目更适合作为特定场景下的工程化工具，而非长期稳定的官方兼容方案。
 
 ## Debugging
 
-当启用 `debug=1` 时，服务会输出流程日志，例如：
+当配置允许且启用 `debug=1` 时，服务会输出流程日志，例如：
 
 1. `step=auth`
 2. `step=getCheckImagePoint`
@@ -351,3 +418,9 @@ HTTP status: `200`
 6. `step=queryDetail`
 
 服务端详细错误会写入 `storage/logs/`，用于排查验证码识别失败、接口返回异常、频控触发和上游风控问题。
+
+基础测试骨架可在具备 PHP CLI 的环境下运行：
+
+```bash
+php tests/run.php
+```

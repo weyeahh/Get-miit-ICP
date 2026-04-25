@@ -9,8 +9,10 @@ use Miit\Api\CaptchaApi;
 use Miit\Api\IcpApi;
 use Miit\Api\MiitClient;
 use Miit\Captcha\CaptchaSolver;
+use Miit\Config\AppConfig;
 use Miit\Exception\MiitException;
 use Miit\Exception\RecordNotFoundException;
+use Miit\Exception\UpstreamException;
 use Miit\Support\Debug;
 
 final class MiitQueryService
@@ -28,6 +30,7 @@ final class MiitQueryService
         }
 
         $timestamp = time();
+        $config = new AppConfig();
         $client = new MiitClient($this->timeout);
         $authApi = new AuthApi($client);
         $captchaApi = new CaptchaApi($client);
@@ -78,7 +81,7 @@ final class MiitQueryService
             throw new RecordNotFoundException('no ICP record found for ' . $domain);
         }
 
-        $item = is_array($list[0]) ? $list[0] : [];
+        $item = $this->selectBestMatch($list, $domain);
         $mainId = (int) ($item['mainId'] ?? 0);
         $domainId = (int) ($item['domainId'] ?? 0);
         $serviceId = (int) ($item['serviceId'] ?? 0);
@@ -108,5 +111,29 @@ final class MiitQueryService
         }
 
         return $detail;
+    }
+
+    /** @param array<int, mixed> $list
+     *  @return array<string, mixed>
+     */
+    private function selectBestMatch(array $list, string $domain): array
+    {
+        foreach ($list as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+
+            $value = strtolower((string) ($candidate['unitName'] ?? $candidate['domain'] ?? ''));
+            if ($value === strtolower($domain)) {
+                return $candidate;
+            }
+        }
+
+        $first = $list[0] ?? null;
+        if (!is_array($first)) {
+            throw new UpstreamException('queryByCondition returned invalid list item', 'upstream query failed');
+        }
+
+        return $first;
     }
 }

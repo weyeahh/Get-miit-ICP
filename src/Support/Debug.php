@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Miit\Support;
 
+use Miit\Config\AppConfig;
+
 final class Debug
 {
     public static function log(bool $enabled, string $message): void
     {
-        if (!$enabled) {
+        $config = new AppConfig();
+        if (!$enabled || !$config->bool('debug.allow_query_toggle')) {
             return;
         }
 

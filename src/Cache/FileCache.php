@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Miit\Cache;
 
+use Miit\Exception\StorageException;
 use Miit\Exception\MiitException;
 use Miit\Support\AppPaths;
 
@@ -24,23 +25,37 @@ final class FileCache
             return null;
         }
 
-        $raw = file_get_contents($file);
-        if (!is_string($raw) || $raw === '') {
-            return null;
+        $handle = fopen($file, 'rb');
+        if ($handle === false) {
+            throw new StorageException('failed to open cache file', 'service storage is not ready');
         }
 
-        $payload = json_decode($raw, true);
-        if (!is_array($payload)) {
-            return null;
+        if (!flock($handle, LOCK_SH)) {
+            fclose($handle);
+            throw new StorageException('failed to lock cache file for read', 'service storage is not ready');
         }
 
-        $expiresAt = (int) ($payload['expires_at'] ?? 0);
-        if ($expiresAt > 0 && $expiresAt < time()) {
-            @unlink($file);
-            return null;
-        }
+        try {
+            $raw = stream_get_contents($handle);
+            if (!is_string($raw) || $raw === '') {
+                return null;
+            }
 
-        return is_array($payload['value'] ?? null) ? $payload['value'] : null;
+            $payload = json_decode($raw, true);
+            if (!is_array($payload)) {
+                return null;
+            }
+
+            $expiresAt = (int) ($payload['expires_at'] ?? 0);
+            if ($expiresAt > 0 && $expiresAt < time()) {
+                return null;
+            }
+
+            return is_array($payload['value'] ?? null) ? $payload['value'] : null;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     /** @param array<string, mixed> $value */
@@ -52,9 +67,38 @@ final class FileCache
             'value' => $value,
         ];
 
-        $written = file_put_contents($file, (string) json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
-        if ($written === false) {
-            throw new MiitException('failed to write cache file');
+        $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            throw new StorageException('failed to encode cache payload', 'service storage is not ready');
+        }
+
+        $handle = fopen($file, 'c+');
+        if ($handle === false) {
+            throw new StorageException('failed to open cache file', 'service storage is not ready');
+        }
+
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            throw new StorageException('failed to lock cache file', 'service storage is not ready');
+        }
+
+        try {
+            rewind($handle);
+            if (!ftruncate($handle, 0)) {
+                throw new StorageException('failed to truncate cache file', 'service storage is not ready');
+            }
+
+            $written = fwrite($handle, $json);
+            if ($written === false || $written !== strlen($json)) {
+                throw new StorageException('failed to write complete cache file', 'service storage is not ready');
+            }
+
+            if (!fflush($handle)) {
+                throw new StorageException('failed to flush cache file', 'service storage is not ready');
+            }
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
         }
     }
 }
