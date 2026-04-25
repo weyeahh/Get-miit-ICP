@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/src/bootstrap.php';
 
+use Miit\Exception\RecordNotFoundException;
 use Miit\Http\JsonResponse;
 use Miit\Service\MiitQueryService;
 
@@ -13,8 +14,9 @@ $domain = isset($_GET['domain']) ? trim((string) $_GET['domain']) : '';
 
 if ($domain === '') {
     JsonResponse::send([
-        'success' => false,
-        'error' => 'domain parameter is required',
+        'code' => 400,
+        'message' => 'domain parameter is required',
+        'data' => null,
     ], 400);
 }
 
@@ -35,9 +37,22 @@ try {
             'UpdateRecordTime' => (string) ($detail['updateRecordTime'] ?? ''),
         ],
     ]);
+} catch (RecordNotFoundException $e) {
+    JsonResponse::send([
+        'code' => 404,
+        'message' => 'no ICP record found',
+        'data' => [
+            'domain' => $domain,
+            'detail' => $e->getMessage(),
+        ],
+    ], 404);
 } catch (Throwable $e) {
     JsonResponse::send([
-        'success' => false,
-        'error' => $e->getMessage(),
-    ], 502);
+        'code' => 500,
+        'message' => 'upstream query failed',
+        'data' => [
+            'domain' => $domain,
+            'detail' => $e->getMessage(),
+        ],
+    ], 500);
 }

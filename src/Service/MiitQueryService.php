@@ -10,6 +10,7 @@ use Miit\Api\IcpApi;
 use Miit\Api\MiitClient;
 use Miit\Captcha\CaptchaSolver;
 use Miit\Exception\MiitException;
+use Miit\Exception\RecordNotFoundException;
 use Miit\Support\Debug;
 
 final class MiitQueryService
@@ -54,10 +55,18 @@ final class MiitQueryService
 
         Debug::log($debug, 'step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=' . $domain . ' serviceType=1');
         $queryResponse = $icpApi->queryByCondition($domain);
+        if (($queryResponse['success'] ?? false) !== true || ($queryResponse['code'] ?? 0) !== 200) {
+            throw new MiitException(sprintf(
+                'queryByCondition rejected: code=%s msg=%s',
+                (string) ($queryResponse['code'] ?? ''),
+                (string) ($queryResponse['msg'] ?? '')
+            ));
+        }
+
         $queryParams = is_array($queryResponse['params'] ?? null) ? $queryResponse['params'] : [];
         $list = is_array($queryParams['list'] ?? null) ? $queryParams['list'] : [];
         if ($list === []) {
-            throw new MiitException('queryByCondition returned no records for ' . $domain);
+            throw new RecordNotFoundException('no ICP record found for ' . $domain);
         }
 
         $item = is_array($list[0]) ? $list[0] : [];

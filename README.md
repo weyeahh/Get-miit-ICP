@@ -56,8 +56,6 @@
 |  |- Support/
 |  |  `- Debug.php
 |  `- bootstrap.php
-|- knowledge-base/
-|  `- fuckmiit-knowledge-base.md
 `- README.md
 ```
 
@@ -175,17 +173,35 @@ HTTP status: `200`
 
 ```json
 {
-  "success": false,
-  "error": "domain parameter is required"
+  "code": 400,
+  "message": "domain parameter is required",
+  "data": null
 }
 ```
 
-查询失败或上游接口异常时，HTTP status: `502`
+未找到备案记录时，HTTP status: `404`
 
 ```json
 {
-  "success": false,
-  "error": "具体错误信息"
+  "code": 404,
+  "message": "no ICP record found",
+  "data": {
+    "domain": "example.com",
+    "detail": "no ICP record found for example.com"
+  }
+}
+```
+
+上游接口异常或被风控等系统错误时，HTTP status: `500`
+
+```json
+{
+  "code": 500,
+  "message": "upstream query failed",
+  "data": {
+    "domain": "example.com",
+    "detail": "具体错误信息"
+  }
 }
 ```
 
@@ -211,6 +227,8 @@ HTTP status: `200`
 4. 使用验证码大图中的缺口区域进行本地识别。
 5. 在识别出的偏移量附近做小范围穷举校验。
 6. 列表查询后默认使用第一条结果获取详情。
+7. 当列表为空时，返回 404 业务响应，而不是将其视为系统异常。
+8. 当上游接口异常、访问受限或疑似被风控时，返回 500 详细错误响应。
 
 ## Limitations
 
@@ -238,13 +256,6 @@ HTTP status: `200`
 
 这些日志主要用于排查验证码识别失败、接口返回异常或查询链路中断问题。
 
-## Knowledge Base
-
-仓库附带了原始项目的本地分析文档：
-
-- `knowledge-base/fuckmiit-knowledge-base.md`
-
-该文档详细记录了原项目的结构、调用链、验证码机制和主要风险点，适合作为二次开发参考资料。
 
 ## License
 

@@ -6,6 +6,6 @@ namespace Miit\Exception;
 
 use RuntimeException;
 
-final class MiitException extends RuntimeException
+class MiitException extends RuntimeException
 {
 }
