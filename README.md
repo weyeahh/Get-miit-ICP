@@ -23,7 +23,8 @@
 8. 增加成功缓存和空结果短缓存，减少重复请求上游。
 9. 错误对外脱敏，对内写入服务端日志。
 10. 日志写入采用 best-effort 策略，日志失败不会破坏 API 响应。
-11. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
+11. 将用户可调参数迁移到独立配置文件 `config/app.php`，并支持环境变量覆盖。
+12. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
 
 ## Project Origin
 
@@ -87,6 +88,8 @@
 |  |- Validation/
 |  |  `- DomainNormalizer.php
 |  `- bootstrap.php
+|- config/
+|  `- app.php
 |- storage/
 |  |- cache/
 |  |- locks/
@@ -138,7 +141,7 @@
    负责域名规范化、长度限制、字符合法性和标签校验。
 
 3. `src/Config/AppConfig.php`
-   负责缓存 TTL、限流阈值、singleflight 等待时间、日志截断长度、debug 开关等配置的集中定义，并支持从环境变量覆盖默认值。同时对关键整数配置做上下界夹紧，避免 0、负数或异常大值破坏运行语义。
+   负责加载 `config/app.php` 中的默认配置，扁平化后提供统一读取接口，并支持环境变量覆盖默认值。同时对关键整数配置做上下界夹紧，避免 0、负数或异常大值破坏运行语义。
 
 4. `src/RateLimit/QueryGuard.php`
    负责全局、IP、domain 限流和失败冷却策略。当前通过 `consumeAll()` 实现多维限流的原子消费，避免单维失败污染其他维度计数。
@@ -194,6 +197,7 @@
 6. 运行用户需要对项目目录下的 `storage/` 有读写权限。
 7. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
 8. 若需要验证 `composer.json` 语义，需额外安装 Composer CLI。
+9. 如需调整缓存时长、限流阈值、等待时间等参数，优先修改 `config/app.php`，避免直接改源码逻辑。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
 
@@ -218,6 +222,30 @@ http://127.0.0.1:8080/?domain=baidu.com&debug=1
 ```
 
 由于默认关闭 query 参数控制的 debug，除非在 `AppConfig` 中显式开启 `debug.allow_query_toggle`，否则 `debug=1` 不会生效。
+
+用户可调配置位于：
+
+```php
+config/app.php
+```
+
+当前可直接配置的内容包括：
+
+1. `cache.schema_version`
+2. `cache.success_ttl`
+3. `cache.miss_ttl`
+4. `ratelimit.global_qps`
+5. `ratelimit.ip_per_minute`
+6. `ratelimit.domain_per_window`
+7. `ratelimit.domain_window_seconds`
+8. `ratelimit.domain_cooldown_seconds`
+9. `ratelimit.global_cooldown_seconds`
+10. `ratelimit.domain_wait_timeout_seconds`
+11. `ratelimit.domain_wait_interval_milliseconds`
+12. `debug.allow_query_toggle`
+13. `log.max_detail_length`
+
+若环境变量和配置文件同时存在，环境变量优先级更高。
 
 ## API
 

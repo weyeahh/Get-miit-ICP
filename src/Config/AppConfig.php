@@ -6,21 +6,7 @@ namespace Miit\Config;
 
 final class AppConfig
 {
-    private const DEFAULTS = [
-        'cache.schema_version' => 'v1',
-        'cache.success_ttl' => 86400,
-        'cache.miss_ttl' => 1800,
-        'ratelimit.global_qps' => 3,
-        'ratelimit.ip_per_minute' => 20,
-        'ratelimit.domain_per_window' => 3,
-        'ratelimit.domain_window_seconds' => 300,
-        'ratelimit.domain_cooldown_seconds' => 120,
-        'ratelimit.global_cooldown_seconds' => 15,
-        'ratelimit.domain_wait_timeout_seconds' => 3,
-        'ratelimit.domain_wait_interval_milliseconds' => 250,
-        'debug.allow_query_toggle' => false,
-        'log.max_detail_length' => 512,
-    ];
+    private const CONFIG_FILE = __DIR__ . '/../../config/app.php';
 
     /** @var array<string, mixed> */
     private array $values;
@@ -28,7 +14,7 @@ final class AppConfig
     /** @param array<string, mixed> $overrides */
     public function __construct(array $overrides = [])
     {
-        $this->values = self::DEFAULTS;
+        $this->values = $this->loadDefaults();
         foreach ($this->envOverrides() as $key => $value) {
             $this->values[$key] = $value;
         }
@@ -93,7 +79,7 @@ final class AppConfig
                 continue;
             }
 
-            $default = self::DEFAULTS[$key] ?? null;
+            $default = $this->values[$key] ?? null;
             if (is_bool($default)) {
                 $overrides[$key] = in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true);
             } elseif (is_int($default)) {
@@ -104,5 +90,37 @@ final class AppConfig
         }
 
         return $overrides;
+    }
+
+    /** @return array<string, mixed> */
+    private function loadDefaults(): array
+    {
+        $loaded = require self::CONFIG_FILE;
+        if (!is_array($loaded)) {
+            throw new \RuntimeException('config/app.php must return an array');
+        }
+
+        return $this->flatten($loaded);
+    }
+
+    /** @param array<string, mixed> $values
+     *  @return array<string, mixed>
+     */
+    private function flatten(array $values, string $prefix = ''): array
+    {
+        $result = [];
+        foreach ($values as $key => $value) {
+            $fullKey = $prefix === '' ? (string) $key : $prefix . '.' . $key;
+            if (is_array($value)) {
+                foreach ($this->flatten($value, $fullKey) as $nestedKey => $nestedValue) {
+                    $result[$nestedKey] = $nestedValue;
+                }
+                continue;
+            }
+
+            $result[$fullKey] = $value;
+        }
+
+        return $result;
     }
 }
