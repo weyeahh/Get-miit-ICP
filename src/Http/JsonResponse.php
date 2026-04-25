@@ -11,6 +11,7 @@ final class JsonResponse
         http_response_code($statusCode);
         $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($json)) {
+            http_response_code(500);
             $json = '{"code":500,"message":"response encoding failed","data":null}';
         }
 

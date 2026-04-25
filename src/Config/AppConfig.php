@@ -16,7 +16,7 @@ final class AppConfig
         'ratelimit.domain_window_seconds' => 300,
         'ratelimit.domain_cooldown_seconds' => 120,
         'ratelimit.global_cooldown_seconds' => 15,
-        'ratelimit.domain_wait_timeout_seconds' => 16,
+        'ratelimit.domain_wait_timeout_seconds' => 3,
         'ratelimit.domain_wait_interval_milliseconds' => 250,
         'debug.allow_query_toggle' => false,
         'log.max_detail_length' => 512,
@@ -29,6 +29,9 @@ final class AppConfig
     public function __construct(array $overrides = [])
     {
         $this->values = self::DEFAULTS;
+        foreach ($this->envOverrides() as $key => $value) {
+            $this->values[$key] = $value;
+        }
         foreach ($overrides as $key => $value) {
             $this->values[$key] = $value;
         }
@@ -47,5 +50,44 @@ final class AppConfig
     public function string(string $key): string
     {
         return (string) ($this->values[$key] ?? '');
+    }
+
+    /** @return array<string, mixed> */
+    private function envOverrides(): array
+    {
+        $map = [
+            'MIIT_CACHE_SCHEMA_VERSION' => 'cache.schema_version',
+            'MIIT_CACHE_SUCCESS_TTL' => 'cache.success_ttl',
+            'MIIT_CACHE_MISS_TTL' => 'cache.miss_ttl',
+            'MIIT_RATE_LIMIT_GLOBAL_QPS' => 'ratelimit.global_qps',
+            'MIIT_RATE_LIMIT_IP_PER_MINUTE' => 'ratelimit.ip_per_minute',
+            'MIIT_RATE_LIMIT_DOMAIN_PER_WINDOW' => 'ratelimit.domain_per_window',
+            'MIIT_RATE_LIMIT_DOMAIN_WINDOW_SECONDS' => 'ratelimit.domain_window_seconds',
+            'MIIT_RATE_LIMIT_DOMAIN_COOLDOWN_SECONDS' => 'ratelimit.domain_cooldown_seconds',
+            'MIIT_RATE_LIMIT_GLOBAL_COOLDOWN_SECONDS' => 'ratelimit.global_cooldown_seconds',
+            'MIIT_RATE_LIMIT_DOMAIN_WAIT_TIMEOUT_SECONDS' => 'ratelimit.domain_wait_timeout_seconds',
+            'MIIT_RATE_LIMIT_DOMAIN_WAIT_INTERVAL_MILLISECONDS' => 'ratelimit.domain_wait_interval_milliseconds',
+            'MIIT_DEBUG_ALLOW_QUERY_TOGGLE' => 'debug.allow_query_toggle',
+            'MIIT_LOG_MAX_DETAIL_LENGTH' => 'log.max_detail_length',
+        ];
+
+        $overrides = [];
+        foreach ($map as $env => $key) {
+            $value = getenv($env);
+            if ($value === false || $value === '') {
+                continue;
+            }
+
+            $default = self::DEFAULTS[$key] ?? null;
+            if (is_bool($default)) {
+                $overrides[$key] = in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true);
+            } elseif (is_int($default)) {
+                $overrides[$key] = (int) $value;
+            } else {
+                $overrides[$key] = $value;
+            }
+        }
+
+        return $overrides;
     }
 }

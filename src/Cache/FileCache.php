@@ -20,6 +20,7 @@ final class FileCache
     /** @return array<string, mixed>|null */
     public function get(string $key): ?array
     {
+        $this->gc();
         $file = $this->directory . '/' . sha1($key) . '.json';
         if (!is_file($file)) {
             return null;
@@ -48,6 +49,7 @@ final class FileCache
 
             $expiresAt = (int) ($payload['expires_at'] ?? 0);
             if ($expiresAt > 0 && $expiresAt < time()) {
+                @unlink($file);
                 return null;
             }
 
@@ -61,6 +63,7 @@ final class FileCache
     /** @param array<string, mixed> $value */
     public function set(string $key, array $value, int $ttlSeconds): void
     {
+        $this->gc();
         $file = $this->directory . '/' . sha1($key) . '.json';
         $payload = [
             'expires_at' => time() + max(1, $ttlSeconds),
@@ -99,6 +102,37 @@ final class FileCache
         } finally {
             flock($handle, LOCK_UN);
             fclose($handle);
+        }
+    }
+
+    private function gc(): void
+    {
+        if (random_int(1, 50) !== 1) {
+            return;
+        }
+
+        $now = time();
+        foreach (glob($this->directory . '/*.json') ?: [] as $file) {
+            if (!is_string($file) || !is_file($file)) {
+                continue;
+            }
+
+            $raw = @file_get_contents($file);
+            if (!is_string($raw) || $raw === '') {
+                @unlink($file);
+                continue;
+            }
+
+            $decoded = json_decode($raw, true);
+            if (!is_array($decoded)) {
+                @unlink($file);
+                continue;
+            }
+
+            $expiresAt = (int) ($decoded['expires_at'] ?? 0);
+            if ($expiresAt > 0 && $expiresAt < $now) {
+                @unlink($file);
+            }
         }
     }
 }

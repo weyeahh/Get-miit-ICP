@@ -23,16 +23,18 @@ final class QueryGuard
             throw new RateLimitException('service is temporarily cooling down');
         }
 
-        if (!$this->limiter->hit('global:qps', 1, $this->config->int('ratelimit.global_qps'))) {
-            throw new RateLimitException('global request limit exceeded');
-        }
+        try {
+            $this->limiter->consumeAll([
+                ['key' => 'domain:' . $domain, 'window' => $this->config->int('ratelimit.domain_window_seconds'), 'limit' => $this->config->int('ratelimit.domain_per_window')],
+                ['key' => 'global:qps', 'window' => 1, 'limit' => $this->config->int('ratelimit.global_qps')],
+                ['key' => 'ip:' . $ip, 'window' => 60, 'limit' => $this->config->int('ratelimit.ip_per_minute')],
+            ]);
+        } catch (\Miit\Exception\StorageException $e) {
+            if ($e->userMessage() === 'rate limit exceeded') {
+                throw new RateLimitException('request rate exceeded', 'too many requests', previous: $e);
+            }
 
-        if (!$this->limiter->hit('ip:' . $ip, 60, $this->config->int('ratelimit.ip_per_minute'))) {
-            throw new RateLimitException('ip request limit exceeded');
-        }
-
-        if (!$this->limiter->hit('domain:' . $domain, $this->config->int('ratelimit.domain_window_seconds'), $this->config->int('ratelimit.domain_per_window'))) {
-            throw new RateLimitException('domain request limit exceeded');
+            throw $e;
         }
     }
 

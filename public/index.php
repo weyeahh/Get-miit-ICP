@@ -113,9 +113,10 @@ try {
 
     $service = new MiitQueryService();
     $detail = $service->queryDomainDetail($domain, $debug);
+    $payload = ResponseFormatter::successPayload($detail);
     $queryCache->putSuccess($domain, $detail);
 
-    JsonResponse::send(ResponseFormatter::successPayload($detail));
+    JsonResponse::send($payload);
 } catch (ValidationException $e) {
     JsonResponse::send([
         'code' => 400,
@@ -123,7 +124,7 @@ try {
         'data' => null,
     ], 400);
 } catch (RecordNotFoundException $e) {
-    if (isset($queryCache) && $domain !== '') {
+    if (isset($queryCache) && $domain !== '' && $e->cacheable()) {
         try {
             $queryCache->putMiss($domain);
         } catch (Throwable $cacheError) {

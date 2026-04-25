@@ -98,6 +98,7 @@
 |  |- EnvironmentGuardTest.php
 |  |- JsonResponseTest.php
 |  |- QueryCacheVersionTest.php
+|  |- ResponseFormatterTest.php
 |  `- run.php
 |- composer.json
 `- README.md
@@ -124,8 +125,9 @@
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配优先选择
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
-16. 成功结果进入带 schema version 的缓存并返回
-17. 失败按异常类型分类，分别映射为参数错误、频控错误、存储错误、环境错误、上游错误或内部错误
+16. `ResponseFormatter` 在真正写成功缓存前校验详情字段完整性
+17. 成功结果进入带 schema version 的缓存并返回
+18. 失败按异常类型分类，分别映射为参数错误、频控错误、存储错误、环境错误、上游错误或内部错误
 
 ### Module Responsibilities
 
@@ -136,10 +138,10 @@
    负责域名规范化、长度限制、字符合法性和标签校验。
 
 3. `src/Config/AppConfig.php`
-   负责缓存 TTL、限流阈值、singleflight 等待时间、日志截断长度、debug 开关等配置的集中定义。
+   负责缓存 TTL、限流阈值、singleflight 等待时间、日志截断长度、debug 开关等配置的集中定义，并支持从环境变量覆盖默认值。
 
 4. `src/RateLimit/QueryGuard.php`
-   负责全局、IP、domain 限流和失败冷却策略。
+   负责全局、IP、domain 限流和失败冷却策略。当前通过 `consumeAll()` 实现多维限流的原子消费，避免单维失败污染其他维度计数。
 
 5. `src/RateLimit/DomainQueryLock.php`
    负责同一 domain 查询过程的 singleflight 控制。
@@ -148,7 +150,7 @@
    负责成功缓存与空结果缓存，并通过 schema version 隔离未来结构变化。
 
 7. `src/Cache/FileCache.php`
-   负责缓存文件的加锁读取和完整性校验写入。
+   负责缓存文件的加锁读取、完整性校验写入和轻量级过期清理。
 
 8. `src/Api/MiitClient.php`
    通用 HTTP 客户端，维护请求头、Cookie、超时控制和上游错误截断。
@@ -177,6 +179,9 @@
 16. `src/Support/EnvironmentGuard.php`
     负责运行前检查 `curl`、`gd`、`json` 扩展是否存在。
 
+17. `src/Support/ResponseFormatter.php`
+    负责最终成功响应封装，并显式校验详情必填字段。
+
 ## Requirements
 
 运行环境要求：
@@ -185,9 +190,10 @@
 2. 启用 `curl` 扩展。
 3. 启用 `gd` 扩展。
 4. 启用 `json` 扩展。
-5. 运行用户需要对项目目录下的 `storage/` 有读写权限。
-6. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
-7. 若需要验证 `composer.json` 语义，需额外安装 Composer CLI。
+5. 若希望日志截断完全按多字节字符边界处理，建议启用 `mbstring`，但当前实现即使缺少 `mbstring` 也会回退到字节截断而不会直接 fatal。
+6. 运行用户需要对项目目录下的 `storage/` 有读写权限。
+7. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
+8. 若需要验证 `composer.json` 语义，需额外安装 Composer CLI。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
 
@@ -347,25 +353,28 @@ HTTP status: `200`
 2. `EnvironmentGuard` 会在入口层主动检查 `curl`、`gd`、`json` 扩展，避免服务运行到中途才因缺扩展崩溃。
 3. 缓存优先于上游频控，缓存命中不会消耗上游配额。
 4. 同一 domain 的并发请求先竞争 singleflight 锁，只有真正准备访问上游的请求才在锁内执行频控计数，避免“未出站先扣额度”的限流语义污染。
-5. 全局、IP、domain 限流都通过 `AppConfig` 配置化，而不是硬编码在业务逻辑里。
-6. 上游失败后会进入短暂冷却，避免连续打上游。
-7. `FileRateLimiter` 的频控窗口文件和 cooldown 文件都使用文件锁保护，读取 cooldown 时也加共享锁，避免并发下漏读冷却状态。
-8. `FileCache` 读取缓存时使用共享锁，写入缓存时使用独占锁，并校验编码、截断、写入长度和 flush 完整性，避免并发读写读到半写入内容。
-9. 同域请求在拿到 domain 锁后会再次读取 success/miss cache，降低锁等待期间的重复上游访问。
-10. 同域等待窗口不再固定为 2 秒，而是通过配置化的超时和轮询间隔控制，默认与上游超时更接近。
-11. 成功结果默认缓存 24 小时。
-12. 无备案记录默认缓存 30 分钟，并且只有在列表接口成功、列表为空或精确匹配失败的前提下才会写入 miss cache。
-13. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-14. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
-15. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
-16. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
-17. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
-18. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积。
-19. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
-20. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，避免空响应或破损响应。
-21. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失。
-22. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
-23. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
+5. 全局、IP、domain 限流都通过 `AppConfig` 配置化，而不是硬编码在业务逻辑里，并支持通过环境变量覆盖默认值。
+6. `QueryGuard` 通过 `consumeAll()` 一次性消费多维限流状态，避免 global 先扣、IP 后失败、domain 再失败时的计数污染。
+7. 上游失败后会进入短暂冷却，避免连续打上游。
+8. `FileRateLimiter` 的频控窗口文件和 cooldown 文件都使用文件锁保护，读取 cooldown 时也加共享锁，避免并发下漏读冷却状态。
+9. `FileCache` 读取缓存时使用共享锁，写入缓存时使用独占锁，并校验编码、截断、写入长度和 flush 完整性，避免并发读写读到半写入内容。
+10. `FileCache` 和 `FileRateLimiter` 都带有轻量级随机 GC，用于删除过期缓存、过期 cooldown 和陈旧限流窗口文件，降低 storage 无限增长风险。
+11. 同域请求在拿到 domain 锁后会再次读取 success/miss cache，降低锁等待期间的重复上游访问。
+12. 同域等待窗口不再固定为 2 秒，而是通过配置化的超时和轮询间隔控制；当前默认值已收紧为更保守的等待窗口，以减少 worker 长时间占用。
+13. 成功结果默认缓存 24 小时。
+14. 无备案记录默认缓存 30 分钟，并且只有在列表接口成功、列表为空或精确匹配失败且异常被明确标记为可缓存时才会写入 miss cache。
+15. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
+16. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
+17. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
+18. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
+19. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
+20. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积。
+21. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
+22. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
+23. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
+24. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
+25. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+26. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
 
 ## Implementation Notes
 
@@ -401,6 +410,8 @@ HTTP status: `200`
 这些文件都是本地文件实现，适合单机部署。如果你在多实例环境中运行，建议后续替换为 Redis 等共享存储。
 
 项目默认通过 `.gitignore` 忽略 `storage/` 下的运行产物，并使用 `.gitkeep` 保留必要目录结构。
+
+测试目录中的缓存版本测试会写入 `storage/test-cache/`，该目录属于测试产物，必要时可在 CI 或本地测试后清理。
 
 ## Limitations
 
