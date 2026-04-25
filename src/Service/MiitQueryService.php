@@ -127,6 +127,6 @@ final class MiitQueryService
             }
         }
 
-        throw new RecordNotFoundException('no exact ICP record found for ' . $domain);
+        throw new RecordNotFoundException('no exact ICP record found for ' . $domain, false);
     }
 }

@@ -39,7 +39,22 @@ final class AppConfig
 
     public function int(string $key): int
     {
-        return (int) ($this->values[$key] ?? 0);
+        $value = (int) ($this->values[$key] ?? 0);
+
+        return match ($key) {
+            'cache.success_ttl' => max(60, min($value, 604800)),
+            'cache.miss_ttl' => max(30, min($value, 86400)),
+            'ratelimit.global_qps' => max(1, min($value, 1000)),
+            'ratelimit.ip_per_minute' => max(1, min($value, 10000)),
+            'ratelimit.domain_per_window' => max(1, min($value, 1000)),
+            'ratelimit.domain_window_seconds' => max(1, min($value, 86400)),
+            'ratelimit.domain_cooldown_seconds' => max(1, min($value, 3600)),
+            'ratelimit.global_cooldown_seconds' => max(1, min($value, 3600)),
+            'ratelimit.domain_wait_timeout_seconds' => max(0, min($value, 10)),
+            'ratelimit.domain_wait_interval_milliseconds' => max(10, min($value, 1000)),
+            'log.max_detail_length' => max(64, min($value, 4096)),
+            default => $value,
+        };
     }
 
     public function bool(string $key): bool

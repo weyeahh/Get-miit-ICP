@@ -10,6 +10,7 @@ use Miit\Support\AppPaths;
 final class FileRateLimiter
 {
     private string $directory;
+    private bool $gcRunning = false;
 
     public function __construct(?string $directory = null)
     {
@@ -121,33 +122,35 @@ final class FileRateLimiter
     public function consumeAll(array $rules): void
     {
         $this->gc();
-        $handles = [];
+        $lockedHandles = [];
+        $entries = [];
         foreach ($rules as $rule) {
             $file = $this->directory . '/' . sha1($rule['key']) . '.json';
-            $handles[] = [
+            $entries[] = [
                 'rule' => $rule,
                 'file' => $file,
             ];
         }
 
-        usort($handles, static fn (array $a, array $b): int => strcmp($a['file'], $b['file']));
-
-        foreach ($handles as $index => $item) {
-            $handle = fopen($item['file'], 'c+');
-            if ($handle === false) {
-                throw new StorageException('failed to open rate limit file', 'service storage is not ready');
-            }
-            if (!flock($handle, LOCK_EX)) {
-                fclose($handle);
-                throw new StorageException('failed to lock rate limit file', 'service storage is not ready');
-            }
-            $handles[$index]['handle'] = $handle;
-        }
+        usort($entries, static fn (array $a, array $b): int => strcmp($a['file'], $b['file']));
 
         try {
+            foreach ($entries as $index => $item) {
+                $handle = fopen($item['file'], 'c+');
+                if ($handle === false) {
+                    throw new StorageException('failed to open rate limit file', 'service storage is not ready');
+                }
+                if (!flock($handle, LOCK_EX)) {
+                    fclose($handle);
+                    throw new StorageException('failed to lock rate limit file', 'service storage is not ready');
+                }
+                $lockedHandles[] = $handle;
+                $entries[$index]['handle'] = $handle;
+            }
+
             $states = [];
             $now = time();
-            foreach ($handles as $index => $item) {
+            foreach ($entries as $index => $item) {
                 $raw = stream_get_contents($item['handle']);
                 $state = [];
                 if (is_string($raw) && $raw !== '') {
@@ -168,7 +171,7 @@ final class FileRateLimiter
                 $states[$index] = $state;
             }
 
-            foreach ($handles as $index => $item) {
+            foreach ($entries as $index => $item) {
                 $json = json_encode($states[$index], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 if (!is_string($json)) {
                     throw new StorageException('failed to encode rate limit state', 'service storage is not ready');
@@ -187,10 +190,10 @@ final class FileRateLimiter
                 }
             }
         } finally {
-            foreach ($handles as $item) {
-                if (isset($item['handle']) && is_resource($item['handle'])) {
-                    flock($item['handle'], LOCK_UN);
-                    fclose($item['handle']);
+            foreach ($lockedHandles as $handle) {
+                if (is_resource($handle)) {
+                    flock($handle, LOCK_UN);
+                    fclose($handle);
                 }
             }
         }
@@ -231,38 +234,62 @@ final class FileRateLimiter
 
     private function gc(): void
     {
-        if (random_int(1, 50) !== 1) {
+        if ($this->gcRunning || random_int(1, 50) !== 1) {
             return;
         }
 
-        $now = time();
-        foreach (glob($this->directory . '/*.json') ?: [] as $file) {
-            if (!is_string($file) || !is_file($file)) {
-                continue;
-            }
+        $this->gcRunning = true;
 
-            $raw = @file_get_contents($file);
-            if (!is_string($raw) || $raw === '') {
-                @unlink($file);
-                continue;
-            }
+        try {
+            $now = time();
+            foreach (glob($this->directory . '/*.json') ?: [] as $file) {
+                if (!is_string($file) || !is_file($file)) {
+                    continue;
+                }
 
-            $decoded = json_decode($raw, true);
-            if (!is_array($decoded)) {
-                @unlink($file);
-                continue;
-            }
+                $handle = @fopen($file, 'c+');
+                if ($handle === false) {
+                    continue;
+                }
 
-            $cooldownUntil = (int) ($decoded['cooldown_until'] ?? 0);
-            if ($cooldownUntil > 0 && $cooldownUntil < $now) {
-                @unlink($file);
-                continue;
-            }
+                try {
+                    if (!flock($handle, LOCK_EX | LOCK_NB)) {
+                        continue;
+                    }
 
-            $windowStart = (int) ($decoded['window_started_at'] ?? 0);
-            if ($windowStart > 0 && ($now - $windowStart) > 3600) {
-                @unlink($file);
+                    $raw = stream_get_contents($handle);
+                    $delete = false;
+                    if (!is_string($raw) || $raw === '') {
+                        $delete = true;
+                    } else {
+                        $decoded = json_decode($raw, true);
+                        if (!is_array($decoded)) {
+                            $delete = true;
+                        } else {
+                            $cooldownUntil = (int) ($decoded['cooldown_until'] ?? 0);
+                            $windowStart = (int) ($decoded['window_started_at'] ?? 0);
+                            $delete = ($cooldownUntil > 0 && $cooldownUntil < $now)
+                                || ($windowStart > 0 && ($now - $windowStart) > 3600);
+                        }
+                    }
+
+                    if ($delete) {
+                        ftruncate($handle, 0);
+                        fflush($handle);
+                        flock($handle, LOCK_UN);
+                        fclose($handle);
+                        @unlink($file);
+                        continue;
+                    }
+                } finally {
+                    if (is_resource($handle)) {
+                        @flock($handle, LOCK_UN);
+                        @fclose($handle);
+                    }
+                }
             }
+        } finally {
+            $this->gcRunning = false;
         }
     }
 }
