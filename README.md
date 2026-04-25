@@ -1,8 +1,8 @@
 # Get MIIT ICP
 
-一个基于 PHP 的 MIIT 备案查询服务，接收 `GET` 请求中的 `domain` 参数，返回工信部备案详细信息。
+一个基于 PHP 的 MIIT 备案查询服务，接收 `GET` 请求中的 `domain` 参数，返回工信部备案详细信息，适配了最新版工信部查询系统的滑块验证。
 
-本项目由 [fuckmiit](https://github.com/Mxmilu666/fuckmiit) 重构而来，保留了原项目的核心思路：
+本项目基于 [fuckmiit](https://github.com/Mxmilu666/fuckmiit) 编写，保留了原项目的核心思路，添加了更多的响应处理：
 
 1. 复刻工信部备案查询接口调用链路。
 2. 处理鉴权请求。
