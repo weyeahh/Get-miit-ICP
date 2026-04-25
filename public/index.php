@@ -23,9 +23,17 @@ try {
     $detail = $service->queryDomainDetail($domain, isset($_GET['debug']) && $_GET['debug'] === '1');
 
     JsonResponse::send([
-        'success' => true,
-        'domain' => $domain,
-        'data' => $detail,
+        'code' => 200,
+        'message' => 'successful',
+        'data' => [
+            'Domain' => (string) ($detail['domain'] ?? ''),
+            'UnitName' => (string) ($detail['unitName'] ?? ''),
+            'MainLicence' => (string) ($detail['mainLicence'] ?? ''),
+            'ServiceLicence' => (string) ($detail['serviceLicence'] ?? ''),
+            'NatureName' => (string) ($detail['natureName'] ?? ''),
+            'LeaderName' => (string) ($detail['leaderName'] ?? ''),
+            'UpdateRecordTime' => (string) ($detail['updateRecordTime'] ?? ''),
+        ],
     ]);
 } catch (Throwable $e) {
     JsonResponse::send([
