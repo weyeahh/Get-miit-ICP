@@ -31,6 +31,10 @@ final class AuthApi
         }
 
         $business = (string) (($response['params']['bussiness'] ?? ''));
+        if ($business === '') {
+            throw new MiitException('auth response missing token');
+        }
+
         $this->client->setToken($business);
 
         return $response;

@@ -46,11 +46,20 @@ final class MiitQueryService
         $captchaUuid = (string) ($params['uuid'] ?? '');
         $bigImage = (string) ($params['bigImage'] ?? '');
         $height = (int) ($params['height'] ?? -1);
+        if ($captchaUuid === '' || $bigImage === '' || $height < 0) {
+            throw new MiitException('captcha challenge params missing');
+        }
+
         Debug::log($debug, 'step=getCheckImagePoint success=true captchaUUID=' . $captchaUuid . ' height=' . $height);
 
         $solved = $solver->solve($captchaUuid, $bigImage, $height, $debug);
         $checkResponse = $solved['response'];
-        $client->setSign((string) ($checkResponse['params'] ?? ''));
+        $sign = (string) ($checkResponse['params'] ?? '');
+        if ($sign === '') {
+            throw new MiitException('checkImage response missing sign');
+        }
+
+        $client->setSign($sign);
         $client->setUuid($captchaUuid);
 
         Debug::log($debug, 'step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=' . $domain . ' serviceType=1');
@@ -73,6 +82,9 @@ final class MiitQueryService
         $mainId = (int) ($item['mainId'] ?? 0);
         $domainId = (int) ($item['domainId'] ?? 0);
         $serviceId = (int) ($item['serviceId'] ?? 0);
+        if ($mainId <= 0 || $domainId <= 0 || $serviceId <= 0) {
+            throw new MiitException('queryByCondition response missing valid identifiers');
+        }
 
         Debug::log($debug, sprintf(
             'step=queryDetail endpoint=icpAbbreviateInfo/queryDetailByServiceIdAndDomainId mainId=%d domainId=%d serviceId=%d',

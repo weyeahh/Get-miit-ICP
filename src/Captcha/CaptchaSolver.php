@@ -14,6 +14,7 @@ final class CaptchaSolver
 {
     private const COLOR_TOLERANCE = 12;
     private const RELAXED_COLOR_TOLERANCE = 24;
+    private const MAX_OFFSET_RADIUS = 4;
     private const MIN_COMPONENT_AREA = 900;
     private const MIN_SIDE_LENGTH = 24;
     private const TOP_HINT_ALLOWANCE = 8;
@@ -40,7 +41,7 @@ final class CaptchaSolver
             $box->bottom
         ));
 
-        foreach ($this->candidateOffsets($box->left, 12) as $left) {
+        foreach ($this->candidateOffsets($box->left, self::MAX_OFFSET_RADIUS) as $left) {
             Debug::log($debug, 'step=checkImage attempt_left=' . $left);
             $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
             if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {

@@ -9,15 +9,18 @@
 3. 获取并求解滑块验证码。
 4. 查询备案列表并进一步获取备案详情。
 
-当前版本将原始 Go 库重构为更适合部署的 PHP Web 服务形式，提供统一的 HTTP 接口入口。
+当前版本将原始 Go 库重构为更适合部署的 PHP Web 服务形式，并在原始能力之上补充了输入校验、限流、缓存、错误脱敏和失败冷却机制，以降低上游风控风险。
 
 ## Features
 
 1. 基于 HTTP GET 的简单调用方式。
 2. 纯 PHP 实现，不依赖 Composer。
 3. 内置工信部接口请求头、Cookie 会话、鉴权流程。
-4. 保留滑块验证码识别和偏移试探逻辑。
-5. 返回统一 JSON 响应，适合作为 API 服务集成。
+4. 保留滑块验证码识别与偏移试探逻辑。
+5. 增加 domain 规范化与基础格式校验。
+6. 增加全局、每 IP、每 domain 的文件限流与失败冷却。
+7. 增加成功缓存和空结果短缓存，减少重复请求上游。
+8. 错误对外脱敏，对内写入服务端日志。
 
 ## Project Origin
 
@@ -28,9 +31,9 @@
 本仓库在其基础上进行了以下重构：
 
 1. 从 Go 库改造为 PHP Web 服务。
-2. 按职责拆分为 `Api`、`Captcha`、`Service`、`Http` 等模块。
+2. 按职责拆分为 `Api`、`Captcha`、`Service`、`Http`、`Cache`、`RateLimit`、`Validation` 等模块。
 3. 增加统一的 HTTP 入口与 JSON 响应格式。
-4. 调整接口输出结构，便于前后端或第三方系统直接对接。
+4. 增加频控、缓存、关键字段校验和错误脱敏。
 
 ## Project Structure
 
@@ -44,18 +47,37 @@
 |  |  |- CaptchaApi.php
 |  |  |- IcpApi.php
 |  |  `- MiitClient.php
+|  |- Cache/
+|  |  |- FileCache.php
+|  |  `- QueryCache.php
 |  |- Captcha/
 |  |  |- CaptchaSolver.php
 |  |  `- Rect.php
 |  |- Exception/
-|  |  `- MiitException.php
+|  |  |- MiitException.php
+|  |  |- RateLimitException.php
+|  |  |- RecordNotFoundException.php
+|  |  `- ValidationException.php
 |  |- Http/
 |  |  `- JsonResponse.php
+|  |- RateLimit/
+|  |  |- FileRateLimiter.php
+|  |  `- QueryGuard.php
 |  |- Service/
 |  |  `- MiitQueryService.php
 |  |- Support/
-|  |  `- Debug.php
+|  |  |- AppPaths.php
+|  |  |- ClientIp.php
+|  |  |- Debug.php
+|  |  |- Logger.php
+|  |  `- ResponseFormatter.php
+|  |- Validation/
+|  |  `- DomainNormalizer.php
 |  `- bootstrap.php
+|- storage/
+|  |- cache/
+|  |- logs/
+|  `- ratelimit/
 `- README.md
 ```
 
@@ -66,38 +88,53 @@
 项目执行链路如下：
 
 1. 客户端发起请求：`GET /?domain=example.com`
-2. `public/index.php` 读取 `domain` 参数
-3. `MiitQueryService` 执行完整查询流程
-4. `AuthApi` 请求 `/auth` 获取 `Token`
-5. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-6. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
-7. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
-8. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
-9. 服务将详情字段包装为统一 JSON 返回
+2. `public/index.php` 读取原始参数
+3. `DomainNormalizer` 执行域名规范化与校验
+4. `QueryGuard` 执行全局、IP、domain 频控与冷却判断
+5. `QueryCache` 优先命中成功缓存或空结果缓存
+6. 未命中缓存时，`MiitQueryService` 执行完整查询流程
+7. `AuthApi` 请求 `/auth` 获取 `Token`
+8. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
+9. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
+10. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
+11. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
+12. 成功结果进入缓存并返回
+13. 上游异常则记录日志并返回脱敏后的错误响应
 
 ### Module Responsibilities
 
 1. `public/index.php`
-   HTTP 入口，负责参数读取和响应输出。
+   HTTP 入口，负责参数读取、限流、缓存命中和响应输出。
 
-2. `src/Api/MiitClient.php`
+2. `src/Validation/DomainNormalizer.php`
+   负责域名规范化、长度限制、字符合法性和标签校验。
+
+3. `src/RateLimit/QueryGuard.php`
+   负责全局、IP、domain 限流和失败冷却策略。
+
+4. `src/Cache/QueryCache.php`
+   负责成功缓存与空结果缓存。
+
+5. `src/Api/MiitClient.php`
    通用 HTTP 客户端，维护请求头、Cookie 和超时控制。
 
-3. `src/Api/AuthApi.php`
+6. `src/Api/AuthApi.php`
    封装 `auth` 接口和 `authKey` 生成逻辑。
 
-4. `src/Api/CaptchaApi.php`
+7. `src/Api/CaptchaApi.php`
    封装验证码获取与校验接口。
 
-5. `src/Captcha/CaptchaSolver.php`
-   验证码识别核心模块，负责：
-   读取图片、识别缺口、枚举候选横坐标、调用校验接口。
+8. `src/Captcha/CaptchaSolver.php`
+   验证码识别核心模块，负责读取图片、识别缺口、枚举候选横坐标、调用校验接口。
 
-6. `src/Api/IcpApi.php`
+9. `src/Api/IcpApi.php`
    封装备案列表和详情查询接口。
 
-7. `src/Service/MiitQueryService.php`
-   业务编排层，串起完整的 MIIT 查询流程。
+10. `src/Service/MiitQueryService.php`
+    业务编排层，串起完整的 MIIT 查询流程，并补充关键字段校验。
+
+11. `src/Support/Logger.php`
+    负责将详细错误写入本地日志，而不是直接返回客户端。
 
 ## Requirements
 
@@ -106,6 +143,7 @@
 1. PHP 8.1 或更高版本。
 2. 启用 `curl` 扩展。
 3. 启用 `gd` 扩展。
+4. 运行用户需要对项目目录下的 `storage/` 有读写权限。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
 
@@ -142,7 +180,7 @@ GET /
 Query Parameters:
 
 1. `domain` required
-   要查询的域名。
+   要查询的域名。系统会自动执行规范化与格式校验。
 
 2. `debug` optional
    传入 `1` 时输出调试日志到标准错误流。
@@ -169,12 +207,12 @@ HTTP status: `200`
 
 ### Error Response
 
-缺少参数时，HTTP status: `400`
+参数非法时，HTTP status: `400`
 
 ```json
 {
   "code": 400,
-  "message": "domain parameter is required",
+  "message": "domain format is invalid",
   "data": null
 }
 ```
@@ -192,6 +230,18 @@ HTTP status: `200`
 }
 ```
 
+请求过于频繁或处于冷却中时，HTTP status: `429`
+
+```json
+{
+  "code": 429,
+  "message": "too many requests",
+  "data": {
+    "domain": "example.com"
+  }
+}
+```
+
 上游接口异常或被风控等系统错误时，HTTP status: `500`
 
 ```json
@@ -200,7 +250,7 @@ HTTP status: `200`
   "message": "upstream query failed",
   "data": {
     "domain": "example.com",
-    "detail": "具体错误信息"
+    "detail": "the upstream service rejected or failed the query"
   }
 }
 ```
@@ -217,6 +267,18 @@ HTTP status: `200`
 6. `leaderName` -> `LeaderName`
 7. `updateRecordTime` -> `UpdateRecordTime`
 
+## Governance Strategy
+
+为了降低上游风控风险，当前版本增加了治理层：
+
+1. domain 参数进入主链路前会做规范化与格式校验。
+2. 增加全局、每 IP、每 domain 的限流。
+3. 上游失败后会进入短暂冷却，避免连续打上游。
+4. 成功结果默认缓存 24 小时。
+5. 无备案记录默认缓存 30 分钟。
+6. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
+7. 客户端只看到脱敏后的错误消息，详细错误进入本地日志。
+
 ## Implementation Notes
 
 为了尽可能保持与原项目一致，当前 PHP 版本沿用了原始实现的几个核心策略：
@@ -225,10 +287,24 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 在识别出的偏移量附近做小范围穷举校验。
-6. 列表查询后默认使用第一条结果获取详情。
-7. 当列表为空时，返回 404 业务响应，而不是将其视为系统异常。
-8. 当上游接口异常、访问受限或疑似被风控时，返回 500 详细错误响应。
+5. 列表查询后默认使用第一条结果获取详情。
+6. 只有在列表接口本身成功且结果为空时，才返回 `404`。
+7. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `500`。
+
+## Storage
+
+项目会在运行时自动创建 `storage/` 目录，用于：
+
+1. `storage/cache/`
+   保存成功缓存和空结果缓存。
+
+2. `storage/ratelimit/`
+   保存频控窗口与冷却状态。
+
+3. `storage/logs/`
+   保存结构化错误日志。
+
+这些文件都是本地文件实现，适合单机部署。如果你在多实例环境中运行，建议后续替换为 Redis 等共享存储。
 
 ## Limitations
 
@@ -238,8 +314,9 @@ HTTP status: `200`
 
 1. 如果工信部接口字段发生变化，服务可能失效。
 2. 如果验证码颜色、形状或返回数据结构改变，识别逻辑可能失效。
-3. 当前没有实现自动重试、限流处理或高级恢复机制。
+3. 当前缓存与频控基于本地文件，适合单机，不适合直接横向扩容。
 4. 列表结果默认取第一条记录，未做复杂筛选。
+5. 当前没有 stale 数据回退策略，500 时不会回放历史成功缓存。
 
 这意味着该项目更适合作为特定场景下的工程化工具，而非长期稳定的官方兼容方案。
 
@@ -254,4 +331,10 @@ HTTP status: `200`
 5. `step=query`
 6. `step=queryDetail`
 
-这些日志主要用于排查验证码识别失败、接口返回异常或查询链路中断问题。
+服务端详细错误会写入 `storage/logs/`，用于排查验证码识别失败、接口返回异常、频控触发和上游风控问题。
+
+## License
+
+请根据你的实际开源策略补充或更新许可证内容。
+
+如果你希望沿用原始项目的开源精神，建议在发布前明确当前仓库的 License 文件内容，并确认与来源项目兼容。
