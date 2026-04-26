@@ -7,6 +7,12 @@ namespace Miit\Support;
 final class Logger
 {
     /** @param array<string, mixed> $context */
+    public static function debug(string $message, array $context = []): void
+    {
+        self::write('debug', $message, $context);
+    }
+
+    /** @param array<string, mixed> $context */
     public static function error(string $message, array $context = []): void
     {
         self::write('error', $message, $context);

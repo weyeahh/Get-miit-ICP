@@ -24,7 +24,8 @@
 9. 错误对外脱敏，对内写入服务端日志。
 10. 日志写入采用 best-effort 策略，日志失败不会破坏 API 响应。
 11. 将用户可调参数迁移到独立配置文件 `config/app.php`，并支持环境变量覆盖。
-12. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
+12. 增加 queryByCondition 候选项诊断、标识符字段变体兼容和列表详情兜底。
+13. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
 
 ## Project Origin
 
@@ -100,6 +101,7 @@
 |  |- DomainNormalizerTest.php
 |  |- EnvironmentGuardTest.php
 |  |- JsonResponseTest.php
+|  |- MiitQueryServiceTest.php
 |  |- QueryCacheVersionTest.php
 |  |- ResponseFormatterTest.php
 |  `- run.php
@@ -126,11 +128,12 @@
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
 12. `CaptchaSolver` 优先使用 `smallImage` 对 `bigImage` 做模板匹配来定位缺口坐标，失败时再回退到大图启发式识别，并调用 `/image/checkImage`
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
-14. `MiitQueryService` 对列表结果执行精确匹配优先选择
-15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
-16. `ResponseFormatter` 在真正写成功缓存前校验详情字段完整性
-17. 成功结果进入带 schema version 的缓存并返回
-18. 失败按异常类型分类，分别映射为参数错误、频控错误、存储错误、环境错误、上游错误或内部错误
+14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
+15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
+16. `MiitQueryService` 对详情结果执行必填字段规范化与校验
+17. `ResponseFormatter` 在真正写成功缓存前再次校验详情字段完整性
+18. 成功结果进入带 schema version 的缓存并返回
+19. 失败按异常类型分类，分别映射为参数错误、频控错误、存储错误、环境错误、上游错误或内部错误
 
 ### Module Responsibilities
 
@@ -156,7 +159,7 @@
    负责缓存文件的加锁读取、完整性校验写入和带锁轻量级过期清理。
 
 8. `src/Api/MiitClient.php`
-   通用 HTTP 客户端，维护请求头、Cookie、超时控制和上游错误截断。
+   通用 HTTP 客户端，维护请求头、Cookie、超时控制、上游错误截断和请求结束后的 cURL 句柄释放。
 
 9. `src/Api/AuthApi.php`
    封装 `auth` 接口和 `authKey` 生成逻辑，并把鉴权协议失败统一归类为上游错误。
@@ -171,10 +174,10 @@
     封装备案列表和详情查询接口。
 
 13. `src/Service/MiitQueryService.php`
-    业务编排层，串起完整的 MIIT 查询流程，并补充关键字段校验和列表精确匹配优先策略。
+    业务编排层，串起完整的 MIIT 查询流程，并补充关键字段校验、列表精确匹配、有效标识符优先选择和列表详情兜底策略。
 
 14. `src/Support/Logger.php`
-    负责将详细错误写入本地日志，并在日志失败时降级到 `php://stderr`。
+    负责将详细错误和 debug 诊断信息写入本地日志，并在日志失败时降级到 `php://stderr`。
 
 15. `src/Http/JsonResponse.php`
     负责响应输出，并在 JSON 编码失败时输出保底错误 JSON。
@@ -197,8 +200,8 @@
 6. 运行用户需要对项目目录下的 `storage/` 有读写权限。
 7. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
 8. 若需要验证 `composer.json` 语义，需额外安装 Composer CLI。
-9. 在 PHP 8.5+ 环境下，项目已移除 `curl_close()` 和 `imagedestroy()` 这类已弃用且无实际效果的调用，避免页面直接输出 Deprecated 警告。
-9. 如需调整缓存时长、限流阈值、等待时间等参数，优先修改 `config/app.php`，避免直接改源码逻辑。
+9. 在 PHP 8.5+ 环境下，测试代码不再使用 `ReflectionMethod::setAccessible()`，避免 Deprecated 警告污染测试输出。
+10. 如需调整缓存时长、限流阈值、等待时间等参数，优先修改 `config/app.php`，避免直接改源码逻辑。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
 
@@ -304,7 +307,7 @@ return [
     ],
 
     'debug' => [
-        // 是否启用调试输出。启用后服务会把流程日志写到 stderr。
+        // 是否启用调试输出。启用后服务会把流程日志写到 storage/logs 和 stderr。
         'enabled' => false,
     ],
 
@@ -351,7 +354,7 @@ return [
     等待期间轮询缓存的间隔。间隔越小，结果命中更及时，但轮询更频繁；间隔越大，CPU 压力更低，但返回延迟更高。
 
 12. `debug.enabled`
-    控制是否启用流程调试日志。启用后服务会将关键步骤日志输出到 stderr。生产环境通常建议保持 `false`。
+    控制是否启用流程调试日志。启用后服务会将关键步骤日志写入 `storage/logs/`，并同步尝试输出到 stderr。生产环境通常建议保持 `false`，排查完成后应关闭。
 
 13. `log.max_detail_length`
     控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
@@ -553,17 +556,19 @@ HTTP status: `200`
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
 18. 验证码求解优先走 `smallImage` 模板匹配，只有模板匹配不可用时才回退到大图启发式识别；同时会过滤明显无效的极左候选值，减少 `left=0` 这类退化结果。
-19. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
-20. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
-21. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
-22. 验证码识别失败、图片解码失败、`checkImage` 偏移尝试耗尽等路径也统一归类为 `UpstreamException`，不再错误落入内部错误分支。
-23. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积。
-24. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
-25. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
-26. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
-27. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
-28. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
-29. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
+19. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
+20. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
+21. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
+22. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
+23. 验证码识别失败、图片解码失败、`checkImage` 偏移尝试耗尽等路径也统一归类为 `UpstreamException`，不再错误落入内部错误分支。
+24. `MiitClient` 会截断写入日志的上游错误详情，并在请求结束后释放 cURL 句柄，防止异常响应体无限放大日志体积和长进程资源累积。
+25. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
+26. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
+27. `Debug` 会把流程诊断写入结构化日志，并同步尝试写入 stderr；HTTP 响应仍保持错误脱敏，不会因为开启 debug 而暴露内部异常。
+28. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
+29. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
+30. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+31. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
 
 ## Implementation Notes
 
@@ -573,13 +578,14 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 列表查询后优先进行精确匹配，再根据业务语义返回 `404`，而不是盲目回退第一条结果。
+5. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
 6. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
-7. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
-8. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
-9. 日志系统是辅助能力，失败时不会反向影响主响应契约。
-10. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
-11. 当前 `EnvironmentGuardTest` 已经真实调用 `EnvironmentGuard::assertRuntimeReady()`，会根据当前环境中是否存在 `curl`/`gd` 断言预检行为，而不再只是检查 `json`。
+7. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
+8. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
+9. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
+10. 日志系统是辅助能力，失败时不会反向影响主响应契约。
+11. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
+12. 当前 `EnvironmentGuardTest` 已经真实调用 `EnvironmentGuard::assertRuntimeReady()`，会根据当前环境中是否存在 `curl`/`gd` 断言预检行为，而不再只是检查 `json`。
 
 ## Storage
 
@@ -595,7 +601,7 @@ HTTP status: `200`
    保存 singleflight 锁文件。
 
 4. `storage/logs/`
-   保存结构化错误日志。
+   保存结构化错误日志和 debug 诊断日志。
 
 这些文件都是本地文件实现，适合单机部署。如果你在多实例环境中运行，建议后续替换为 Redis 等共享存储。
 
@@ -612,26 +618,36 @@ HTTP status: `200`
 1. 如果工信部接口字段发生变化，服务可能失效。
 2. 如果验证码颜色、形状或返回数据结构改变，识别逻辑可能失效。
 3. 当前缓存、锁和频控基于本地文件，适合单机，不适合直接横向扩容。
-4. 列表结果虽然增加了精确匹配优先，但仍受上游字段质量影响。
+4. 列表结果虽然增加了精确匹配、有效标识符优先和列表详情兜底，但仍受上游字段质量影响。
 5. 当前没有 stale 数据回退策略，500 时不会回放历史成功缓存。
 6. 同域 singleflight 当前是等待后回读缓存的模式，不是长轮询队列或作业系统。
 7. 仓库附带了 `composer.json` 和基础测试骨架，但当前环境若没有 Composer CLI 仍无法执行 `composer validate --strict`。
-8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界和 `404` 可缓存标志，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。
+8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界、`404` 可缓存标志、列表候选项选择、标识符字段变体和列表详情兜底，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。
 
 这意味着该项目更适合作为特定场景下的工程化工具，而非长期稳定的官方兼容方案。
 
 ## Debugging
 
-当配置文件中的 `debug.enabled=true` 时，服务会输出流程日志，例如：
+当配置文件中的 `debug.enabled=true` 时，服务会把流程日志写入 `storage/logs/app-YYYY-MM-DD.log`，并同步尝试输出到 stderr。HTTP 响应仍然保持脱敏，不会因为开启 debug 而把内部异常直接返回给浏览器。
+
+常见流程日志包括：
 
 1. `step=auth`
 2. `step=getCheckImagePoint`
 3. `step=detect`
 4. `step=checkImage attempt_left=...`
 5. `step=query`
-6. `step=queryDetail`
+6. `step=queryByCondition success=true`
+7. `step=queryByCondition selected_match`
+8. `step=queryByCondition exact_matches_without_valid_identifiers`
+9. `step=queryByCondition missing_valid_identifiers`
+10. `step=queryDetail`
+11. `step=queryByCondition fallback=list_item_detail`
+12. `step=queryDetail fallback=list_item_detail`
 
-服务端详细错误会写入 `storage/logs/`，用于排查验证码识别失败、接口返回异常、频控触发和上游风控问题。
+`queryByCondition` 相关 debug 日志会记录列表数量、候选项 key、原始标识符值和归一化后的标识符，用于排查上游字段变更、列表项缺少 `mainId` / `domainId` / `serviceId`、详情接口不可用等问题。
+
+服务端详细错误和 debug 诊断都会写入 `storage/logs/`，用于排查验证码识别失败、接口返回异常、频控触发、上游风控和列表字段结构变化问题。
 
 基础测试骨架可在具备 PHP CLI 的环境下运行：
 

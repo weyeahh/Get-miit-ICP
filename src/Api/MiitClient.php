@@ -136,22 +136,26 @@ final class MiitClient
         }
         $headers[] = 'Content-Type: ' . $contentType;
 
-        curl_setopt_array($ch, [
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_POSTFIELDS => $body,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_CONNECTTIMEOUT => $this->timeout,
-            CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_COOKIEFILE => $this->cookieFile,
-            CURLOPT_COOKIEJAR => $this->cookieFile,
-            CURLOPT_HTTPHEADER => $headers,
-        ]);
+        try {
+            curl_setopt_array($ch, [
+                CURLOPT_CUSTOMREQUEST => $method,
+                CURLOPT_POSTFIELDS => $body,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_CONNECTTIMEOUT => $this->timeout,
+                CURLOPT_TIMEOUT => $this->timeout,
+                CURLOPT_COOKIEFILE => $this->cookieFile,
+                CURLOPT_COOKIEJAR => $this->cookieFile,
+                CURLOPT_HTTPHEADER => $headers,
+            ]);
 
-        $response = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $error = curl_error($ch);
-        $statusCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            $response = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $error = curl_error($ch);
+            $statusCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        } finally {
+            curl_close($ch);
+        }
 
         if ($errno !== 0) {
             throw new UpstreamException('request failed: ' . $error, 'upstream query failed');

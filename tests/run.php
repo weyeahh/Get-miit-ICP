@@ -11,5 +11,6 @@ Miit\Tests\QueryCacheVersionTest::run();
 Miit\Tests\ResponseFormatterTest::run();
 Miit\Tests\AppConfigTest::run();
 Miit\Tests\RecordNotFoundExceptionTest::run();
+Miit\Tests\MiitQueryServiceTest::run();
 
 fwrite(STDOUT, "tests passed\n");
