@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Miit\Tests;
 
 use Miit\Captcha\CaptchaSolver;
+use Miit\Captcha\DetectionCandidate;
 use Miit\Captcha\Rect;
 use ReflectionClass;
 use ReflectionMethod;
@@ -13,37 +14,50 @@ final class CaptchaSolverTest
 {
     public static function run(): void
     {
-        self::candidateOffsetsRejectSuspiciousLeft();
-        self::candidateOffsetsKeepTemplatePriorityAndDeduplicate();
+        self::rankCandidatesPrefersTemplateMaskOverOtherMethods();
+        self::rankCandidatesPrefersHigherConfidenceWithinSameMethod();
+        self::deduplicateCandidatesRemovesExactMethodPositionDuplicates();
     }
 
-    private static function candidateOffsetsRejectSuspiciousLeft(): void
+    private static function rankCandidatesPrefersTemplateMaskOverOtherMethods(): void
     {
         $solver = self::solverWithoutConstructor();
-        $offsets = self::invoke($solver, 'candidateOffsets', [0, 8]);
+        $ranked = self::invoke($solver, 'rankCandidates', [[
+            new DetectionCandidate('estimate', new Rect(80, 5, 151, 76, 5000), 0.05),
+            new DetectionCandidate('image', new Rect(144, 5, 215, 76, 5000), 0.90),
+            new DetectionCandidate('template-content', new Rect(143, 5, 214, 76, 5000), 0.75),
+            new DetectionCandidate('template-mask', new Rect(142, 5, 213, 76, 5000), 0.50),
+        ]]);
 
-        if ($offsets === []) {
-            throw new \RuntimeException('captcha offsets should still provide fallback candidates');
-        }
-
-        foreach ($offsets as $offset) {
-            if ($offset < 5) {
-                throw new \RuntimeException('captcha offsets should reject suspicious left edge values');
-            }
+        if (!$ranked[0] instanceof DetectionCandidate || $ranked[0]->method !== 'template-mask') {
+            throw new \RuntimeException('captcha ranking should prefer template-mask candidates over lower-priority methods');
         }
     }
 
-    private static function candidateOffsetsKeepTemplatePriorityAndDeduplicate(): void
+    private static function rankCandidatesPrefersHigherConfidenceWithinSameMethod(): void
     {
         $solver = self::solverWithoutConstructor();
-        $offsets = self::invoke($solver, 'candidateOffsetsForDetections', [[
-            ['method' => 'template', 'rect' => new Rect(142, 5, 213, 76, 5000)],
-            ['method' => 'image', 'rect' => new Rect(144, 5, 215, 76, 5000)],
-        ], 2]);
+        $ranked = self::invoke($solver, 'rankCandidates', [[
+            new DetectionCandidate('template-content', new Rect(141, 5, 212, 76, 5000), 0.41),
+            new DetectionCandidate('template-content', new Rect(142, 5, 213, 76, 5000), 0.77),
+        ]]);
 
-        $expected = [142, 141, 143, 140, 144, 145, 146];
-        if ($offsets !== $expected) {
-            throw new \RuntimeException('captcha offsets should preserve detection priority and remove duplicates');
+        if (!$ranked[0] instanceof DetectionCandidate || $ranked[0]->rect->left !== 142) {
+            throw new \RuntimeException('captcha ranking should prefer higher-confidence candidates within the same method');
+        }
+    }
+
+    private static function deduplicateCandidatesRemovesExactMethodPositionDuplicates(): void
+    {
+        $solver = self::solverWithoutConstructor();
+        $unique = self::invoke($solver, 'deduplicateCandidates', [[
+            new DetectionCandidate('template-mask', new Rect(142, 5, 213, 76, 5000), 0.60),
+            new DetectionCandidate('template-mask', new Rect(142, 5, 213, 76, 5000), 0.90),
+            new DetectionCandidate('image', new Rect(142, 5, 213, 76, 5000), 0.80),
+        ]]);
+
+        if (count($unique) !== 2) {
+            throw new \RuntimeException('captcha deduplication should only collapse exact method-position duplicates');
         }
     }
 

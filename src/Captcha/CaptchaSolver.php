@@ -7,15 +7,15 @@ namespace Miit\Captcha;
 use GdImage;
 use Miit\Api\CaptchaApi;
 use Miit\Api\MiitClient;
-use Miit\Exception\MiitException;
+use Miit\Config\AppConfig;
 use Miit\Exception\UpstreamException;
+use Miit\Support\AppPaths;
 use Miit\Support\Debug;
 
 final class CaptchaSolver
 {
     private const COLOR_TOLERANCE = 12;
     private const RELAXED_COLOR_TOLERANCE = 24;
-    private const MAX_OFFSET_RADIUS = 8;
     private const MIN_VALID_LEFT = 5;
     private const MAX_CHALLENGE_ATTEMPTS = 5;
     private const DEFAULT_LEFT = 80;
@@ -31,22 +31,21 @@ final class CaptchaSolver
     private const TARGET_R = 199;
     private const TARGET_G = 186;
     private const TARGET_B = 183;
+    private const MAX_LOGGED_CANDIDATES = 6;
+
+    private AppConfig $config;
 
     public function __construct(
         private readonly MiitClient $client,
         private readonly CaptchaApi $captchaApi
     ) {
+        $this->config = new AppConfig();
     }
 
     /** @return array{rect: Rect, response: array<string, mixed>} */
     public function solve(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, bool $debug): array
     {
-        $challenge = [
-            'uuid' => $captchaUuid,
-            'bigImage' => $bigImage,
-            'smallImage' => $smallImage,
-            'height' => $topHint,
-        ];
+        $challenge = new CaptchaChallenge($captchaUuid, $bigImage, $smallImage, $topHint);
         $failures = [];
 
         for ($attempt = 1; $attempt <= self::MAX_CHALLENGE_ATTEMPTS; $attempt++) {
@@ -54,15 +53,7 @@ final class CaptchaSolver
                 $challenge = $this->requestChallenge($debug, $attempt);
             }
 
-            $result = $this->trySolveChallenge(
-                $challenge['uuid'],
-                $challenge['bigImage'],
-                $challenge['smallImage'],
-                $challenge['height'],
-                $attempt,
-                $debug
-            );
-
+            $result = $this->trySolveChallenge($challenge, $attempt, $debug);
             if (isset($result['response'])) {
                 return $result;
             }
@@ -76,55 +67,61 @@ final class CaptchaSolver
     /**
      * @return array{rect: Rect, response: array<string, mixed>}|array{failure: array<string, mixed>}
      */
-    private function trySolveChallenge(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, int $challengeAttempt, bool $debug): array
+    private function trySolveChallenge(CaptchaChallenge $challenge, int $challengeAttempt, bool $debug): array
     {
-        $detections = $this->detectCandidates($bigImage, $smallImage, $topHint, $debug);
-        $box = $detections[0]['rect'];
-        $offsets = $this->candidateOffsetsForDetections($detections, self::MAX_OFFSET_RADIUS);
-        if ($offsets === []) {
-            throw new UpstreamException('captcha candidate offsets are empty', 'upstream query failed');
+        $candidates = $this->detectCandidates($challenge, $debug);
+        if ($candidates === []) {
+            throw new UpstreamException('captcha candidates are empty', 'upstream query failed');
         }
 
-        $offsetIndex = min($challengeAttempt - 1, count($offsets) - 1);
-        $left = $offsets[$offsetIndex];
+        $selected = $candidates[0];
+        $left = $selected->rect->left;
 
         Debug::log($debug, sprintf(
             'step=detect method=%s left=%d top=%d right=%d bottom=%d',
-            $detections[0]['method'],
-            $box->left,
-            $box->top,
-            $box->right,
-            $box->bottom
+            $selected->method,
+            $selected->rect->left,
+            $selected->rect->top,
+            $selected->rect->right,
+            $selected->rect->bottom
         ), [
             'challenge_attempt' => $challengeAttempt,
-            'candidate_offsets' => array_slice($offsets, 0, 12),
-            'selected_offset_index' => $offsetIndex,
-            'selected_left' => $left,
-            'candidates' => $this->detectionSummaries($detections),
+            'selected_confidence' => $selected->confidence,
+            'candidates' => $this->candidateSummaries($candidates),
         ]);
+
+        $this->persistChallengeSamples($challenge, $challengeAttempt, $candidates, $selected, $debug);
 
         Debug::log($debug, 'step=checkImage attempt_left=' . $left, [
             'challenge_attempt' => $challengeAttempt,
-            'selected_offset_index' => $offsetIndex,
+            'method' => $selected->method,
+            'confidence' => $selected->confidence,
         ]);
 
-        $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
+        $response = $this->captchaApi->tryCheckImage($challenge->uuid, $left);
         if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
-            $box->right += $left - $box->left;
-            $box->left = $left;
+            $rect = new Rect(
+                $left,
+                $selected->rect->top,
+                $selected->rect->right + ($left - $selected->rect->left),
+                $selected->rect->bottom,
+                $selected->rect->area
+            );
+
             Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')), [
                 'challenge_attempt' => $challengeAttempt,
-                'selected_offset_index' => $offsetIndex,
+                'method' => $selected->method,
                 'selected_left' => $left,
             ]);
 
-            return ['rect' => $box, 'response' => $response];
+            return ['rect' => $rect, 'response' => $response];
         }
 
         $failure = [
             'challenge_attempt' => $challengeAttempt,
             'attempt_left' => $left,
-            'selected_offset_index' => $offsetIndex,
+            'method' => $selected->method,
+            'confidence' => $selected->confidence,
             'code' => $response['code'] ?? null,
             'success' => $response['success'] ?? null,
             'msg' => $response['msg'] ?? null,
@@ -135,21 +132,16 @@ final class CaptchaSolver
         return ['failure' => $failure];
     }
 
-    /**
-     * @return list<array{method: string, rect: Rect, score: int}>
-     */
-    private function detectCandidates(string $bigImage, string $smallImage, int $topHint, bool $debug): array
+    /** @return list<DetectionCandidate> */
+    private function detectCandidates(CaptchaChallenge $challenge, bool $debug): array
     {
-        $detections = [];
+        $primary = [];
 
-        foreach ($this->matchTemplateCandidates($bigImage, $smallImage, $topHint) as $template) {
-            $detections[] = $template;
+        foreach ($this->matchTemplateCandidates($challenge->bigImage, $challenge->smallImage, $challenge->height) as $candidate) {
+            $primary[] = $candidate;
         }
 
-        $estimate = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
-        $detections[] = ['method' => 'estimate', 'rect' => $estimate, 'score' => 0];
-
-        $image = $this->detectSquareBase64WithHint($bigImage, $topHint);
+        $image = $this->detectSquareBase64WithHint($challenge->bigImage, $challenge->height);
         if ($image !== null) {
             if ($this->isSuspiciousLeft($image->left)) {
                 Debug::log($debug, 'step=detect rejected_suspicious_left', [
@@ -158,180 +150,28 @@ final class CaptchaSolver
                     'min_valid_left' => self::MIN_VALID_LEFT,
                 ]);
             } else {
-                $detections[] = ['method' => 'image', 'rect' => $image, 'score' => 0];
+                $primary[] = new DetectionCandidate('image', $image, $this->imageConfidence($image), [
+                    'area' => $image->area,
+                ]);
             }
         }
 
-        return $this->deduplicateDetections($detections);
+        $primary = $this->deduplicateCandidates($primary);
+        $rankedPrimary = $this->rankCandidates($primary);
+        if ($rankedPrimary !== []) {
+            return $rankedPrimary;
+        }
+
+        $estimate = $this->estimateGapFromBinaryBase64WithHint($challenge->bigImage, $challenge->height);
+        return [new DetectionCandidate('estimate', $estimate, 0.05, [
+            'reason' => 'no_primary_candidates',
+        ])];
     }
 
     private function detectSquareBase64WithHint(string $encoded, int $topHint): ?Rect
     {
         $imageData = $this->decodeBase64Image($encoded);
         return $this->detectSquareFromBinaryWithHint($imageData, $topHint);
-    }
-
-    /** @return array{uuid: string, bigImage: string, smallImage: string, height: int} */
-    private function requestChallenge(bool $debug, int $challengeAttempt): array
-    {
-        $clientUid = CaptchaApi::newClientUid();
-        Debug::log($debug, 'step=getCheckImagePoint retry clientUid=' . $clientUid, [
-            'challenge_attempt' => $challengeAttempt,
-        ]);
-
-        $challenge = $this->captchaApi->getCheckImagePoint($clientUid);
-        $params = is_array($challenge['params'] ?? null) ? $challenge['params'] : [];
-        $captchaUuid = (string) ($params['uuid'] ?? '');
-        $bigImage = (string) ($params['bigImage'] ?? '');
-        $smallImage = (string) ($params['smallImage'] ?? '');
-        $height = (int) ($params['height'] ?? -1);
-        if ($captchaUuid === '' || $bigImage === '' || $height < 0) {
-            throw new UpstreamException('captcha retry challenge params missing', 'upstream query failed');
-        }
-
-        Debug::log($debug, 'step=getCheckImagePoint retry success=true captchaUUID=' . $captchaUuid . ' height=' . $height, [
-            'challenge_attempt' => $challengeAttempt,
-        ]);
-
-        return [
-            'uuid' => $captchaUuid,
-            'bigImage' => $bigImage,
-            'smallImage' => $smallImage,
-            'height' => $height,
-        ];
-    }
-
-    /** @return list<array{method: string, rect: Rect, score: int}> */
-    private function matchTemplateCandidates(string $bigEncoded, string $smallEncoded, int $topHint): array
-    {
-        if ($smallEncoded === '') {
-            return [];
-        }
-
-        $bigData = $this->decodeBase64Image($bigEncoded);
-        $smallData = $this->decodeBase64Image($smallEncoded);
-        $big = imagecreatefromstring($bigData);
-        $small = imagecreatefromstring($smallData);
-        if (!$big instanceof GdImage || !$small instanceof GdImage) {
-            return [];
-        }
-
-        $bigWidth = imagesx($big);
-        $bigHeight = imagesy($big);
-        $smallWidth = imagesx($small);
-        $smallHeight = imagesy($small);
-        if ($smallWidth <= 0 || $smallHeight <= 0 || $smallWidth > $bigWidth || $smallHeight > $bigHeight) {
-            return [];
-        }
-
-        $startTop = max(0, $topHint - self::TEMPLATE_TOP_MARGIN);
-        $endTop = min($bigHeight - $smallHeight, $topHint + self::TEMPLATE_TOP_MARGIN);
-        if ($endTop < $startTop) {
-            $startTop = 0;
-            $endTop = max(0, $bigHeight - $smallHeight);
-        }
-
-        $maxTemplateLeft = $bigWidth - $smallWidth;
-        if ($maxTemplateLeft < self::MIN_VALID_LEFT) {
-            return [];
-        }
-
-        $startLeft = self::MIN_VALID_LEFT;
-        $endLeft = $maxTemplateLeft;
-
-        $bestMaskScore = -1;
-        $bestMaskLeft = -1;
-        $bestMaskTop = $startTop;
-        $bestContentScore = PHP_INT_MAX;
-        $bestContentLeft = -1;
-        $bestContentTop = $startTop;
-
-        for ($top = $startTop; $top <= $endTop; $top++) {
-            for ($left = $startLeft; $left <= $endLeft; $left++) {
-                $maskScore = $this->templateMaskScore($big, $small, $left, $top, $smallWidth, $smallHeight);
-                if ($maskScore > $bestMaskScore) {
-                    $bestMaskScore = $maskScore;
-                    $bestMaskLeft = $left;
-                    $bestMaskTop = $top;
-                }
-
-                $contentScore = $this->templateContentDifference($big, $small, $left, $top, $smallWidth, $smallHeight);
-                if ($contentScore < $bestContentScore) {
-                    $bestContentScore = $contentScore;
-                    $bestContentLeft = $left;
-                    $bestContentTop = $top;
-                }
-            }
-        }
-
-        $candidates = [];
-        if ($bestMaskLeft >= self::MIN_VALID_LEFT && $bestMaskScore >= self::TEMPLATE_MIN_MASK_SCORE) {
-            $candidates[] = [
-                'method' => 'template-mask',
-                'rect' => new Rect(
-                    $bestMaskLeft,
-                    $bestMaskTop,
-                    $bestMaskLeft + $smallWidth - 1,
-                    $bestMaskTop + $smallHeight - 1,
-                    $smallWidth * $smallHeight
-                ),
-                'score' => $bestMaskScore,
-            ];
-        }
-
-        if ($bestContentLeft >= self::MIN_VALID_LEFT && $bestContentScore <= self::TEMPLATE_MAX_CONTENT_DIFF) {
-            $candidates[] = [
-                'method' => 'template-content',
-                'rect' => new Rect(
-                    $bestContentLeft,
-                    $bestContentTop,
-                    $bestContentLeft + $smallWidth - 1,
-                    $bestContentTop + $smallHeight - 1,
-                    $smallWidth * $smallHeight
-                ),
-                'score' => max(0, 255 - $bestContentScore),
-            ];
-        }
-
-        return $candidates;
-    }
-
-    private function estimateGapFromBinaryBase64WithHint(string $encoded, int $topHint): Rect
-    {
-        $imageData = $this->decodeBase64Image($encoded);
-        $img = imagecreatefromstring($imageData);
-        if (!$img instanceof GdImage) {
-            throw new UpstreamException('decode image failed', 'upstream query failed');
-        }
-
-        return $this->estimateGapFromHint($img, $topHint);
-    }
-
-    private function decodeBase64Image(string $encoded): string
-    {
-        $cleaned = trim($encoded);
-        $commaPos = strpos($cleaned, ',');
-        if ($commaPos !== false) {
-            $cleaned = substr($cleaned, $commaPos + 1);
-        }
-
-        $data = base64_decode($cleaned, true);
-        if ($data !== false) {
-            return $data;
-        }
-
-        $cleaned = strtr($cleaned, '-_', '+/');
-        $padding = strlen($cleaned) % 4;
-        if ($padding > 0) {
-            $cleaned .= str_repeat('=', 4 - $padding);
-        }
-
-        $data = base64_decode($cleaned, true);
-        if ($data === false) {
-            throw new UpstreamException('unsupported base64 image data', 'upstream query failed');
-        }
-
-        return $data;
     }
 
     private function detectSquareFromBinaryWithHint(string $binary, int $topHint): ?Rect
@@ -423,6 +263,111 @@ final class CaptchaSolver
         return $component;
     }
 
+    /** @return list<DetectionCandidate> */
+    private function matchTemplateCandidates(string $bigEncoded, string $smallEncoded, int $topHint): array
+    {
+        if ($smallEncoded === '') {
+            return [];
+        }
+
+        $bigData = $this->decodeBase64Image($bigEncoded);
+        $smallData = $this->decodeBase64Image($smallEncoded);
+        $big = imagecreatefromstring($bigData);
+        $small = imagecreatefromstring($smallData);
+        if (!$big instanceof GdImage || !$small instanceof GdImage) {
+            return [];
+        }
+
+        $bigWidth = imagesx($big);
+        $bigHeight = imagesy($big);
+        $smallWidth = imagesx($small);
+        $smallHeight = imagesy($small);
+        if ($smallWidth <= 0 || $smallHeight <= 0 || $smallWidth > $bigWidth || $smallHeight > $bigHeight) {
+            return [];
+        }
+
+        $startTop = max(0, $topHint - self::TEMPLATE_TOP_MARGIN);
+        $endTop = min($bigHeight - $smallHeight, $topHint + self::TEMPLATE_TOP_MARGIN);
+        if ($endTop < $startTop) {
+            $startTop = 0;
+            $endTop = max(0, $bigHeight - $smallHeight);
+        }
+
+        $maxTemplateLeft = $bigWidth - $smallWidth;
+        if ($maxTemplateLeft < self::MIN_VALID_LEFT) {
+            return [];
+        }
+
+        $bestMaskScore = -1;
+        $bestMaskLeft = -1;
+        $bestMaskTop = $startTop;
+        $bestContentScore = PHP_INT_MAX;
+        $bestContentLeft = -1;
+        $bestContentTop = $startTop;
+
+        for ($top = $startTop; $top <= $endTop; $top++) {
+            for ($left = self::MIN_VALID_LEFT; $left <= $maxTemplateLeft; $left++) {
+                $maskScore = $this->templateMaskScore($big, $small, $left, $top, $smallWidth, $smallHeight);
+                if ($maskScore > $bestMaskScore) {
+                    $bestMaskScore = $maskScore;
+                    $bestMaskLeft = $left;
+                    $bestMaskTop = $top;
+                }
+
+                $contentScore = $this->templateContentDifference($big, $small, $left, $top, $smallWidth, $smallHeight);
+                if ($contentScore < $bestContentScore) {
+                    $bestContentScore = $contentScore;
+                    $bestContentLeft = $left;
+                    $bestContentTop = $top;
+                }
+            }
+        }
+
+        $candidates = [];
+        if ($bestMaskLeft >= self::MIN_VALID_LEFT && $bestMaskScore >= self::TEMPLATE_MIN_MASK_SCORE) {
+            $candidates[] = new DetectionCandidate(
+                'template-mask',
+                new Rect(
+                    $bestMaskLeft,
+                    $bestMaskTop,
+                    $bestMaskLeft + $smallWidth - 1,
+                    $bestMaskTop + $smallHeight - 1,
+                    $smallWidth * $smallHeight
+                ),
+                $this->maskConfidence($bestMaskScore),
+                ['mask_score' => $bestMaskScore]
+            );
+        }
+
+        if ($bestContentLeft >= self::MIN_VALID_LEFT && $bestContentScore <= self::TEMPLATE_MAX_CONTENT_DIFF) {
+            $candidates[] = new DetectionCandidate(
+                'template-content',
+                new Rect(
+                    $bestContentLeft,
+                    $bestContentTop,
+                    $bestContentLeft + $smallWidth - 1,
+                    $bestContentTop + $smallHeight - 1,
+                    $smallWidth * $smallHeight
+                ),
+                $this->contentConfidence($bestContentScore),
+                ['content_diff' => $bestContentScore]
+            );
+        }
+
+        return $candidates;
+    }
+
+    private function estimateGapFromBinaryBase64WithHint(string $encoded, int $topHint): Rect
+    {
+        $imageData = $this->decodeBase64Image($encoded);
+        $img = imagecreatefromstring($imageData);
+        if (!$img instanceof GdImage) {
+            throw new UpstreamException('decode image failed', 'upstream query failed');
+        }
+
+        return $this->estimateGapFromHint($img, $topHint);
+    }
+
     private function estimateGapFromHint(GdImage $img, int $topHint): Rect
     {
         $width = imagesx($img);
@@ -430,14 +375,18 @@ final class CaptchaSolver
         $top = $this->clamp($topHint, 0, max(0, $height - self::GAP_APPROX_SIZE));
         $minLeft = self::MIN_VALID_LEFT;
         $maxLeft = max($minLeft, $width - self::GAP_APPROX_SIZE);
-        $defaultLeft = $this->clamp(self::DEFAULT_LEFT, $minLeft, $maxLeft);
-        $bestLeft = $defaultLeft;
+        $bestLeft = $minLeft;
         $bestScore = -1;
 
-        foreach ($this->centerOutOffsets($defaultLeft, $minLeft, $maxLeft) as $left) {
+        for ($left = $minLeft; $left <= $maxLeft; $left++) {
             $score = $this->windowScore($img, $left, $top, self::GAP_APPROX_SIZE, $width, $height);
-            if ($score > $bestScore || ($score === $bestScore && abs($left - $defaultLeft) < abs($bestLeft - $defaultLeft))) {
+            if ($score > $bestScore) {
                 $bestScore = $score;
+                $bestLeft = $left;
+                continue;
+            }
+
+            if ($score === $bestScore && abs($left - self::DEFAULT_LEFT) > abs($bestLeft - self::DEFAULT_LEFT)) {
                 $bestLeft = $left;
             }
         }
@@ -593,15 +542,161 @@ final class CaptchaSolver
         return intdiv($score, $samples);
     }
 
+    private function decodeBase64Image(string $encoded): string
+    {
+        $cleaned = trim($encoded);
+        $commaPos = strpos($cleaned, ',');
+        if ($commaPos !== false) {
+            $cleaned = substr($cleaned, $commaPos + 1);
+        }
+
+        $data = base64_decode($cleaned, true);
+        if ($data !== false) {
+            return $data;
+        }
+
+        $cleaned = strtr($cleaned, '-_', '+/');
+        $padding = strlen($cleaned) % 4;
+        if ($padding > 0) {
+            $cleaned .= str_repeat('=', 4 - $padding);
+        }
+
+        $data = base64_decode($cleaned, true);
+        if ($data === false) {
+            throw new UpstreamException('unsupported base64 image data', 'upstream query failed');
+        }
+
+        return $data;
+    }
+
+    private function maskConfidence(int $score): float
+    {
+        return min(0.99, max(0.0, $score / 40));
+    }
+
+    private function contentConfidence(int $score): float
+    {
+        return min(0.98, max(0.0, 1 - ($score / max(1, self::TEMPLATE_MAX_CONTENT_DIFF))));
+    }
+
+    private function imageConfidence(Rect $rect): float
+    {
+        $sideWidth = $rect->right - $rect->left + 1;
+        $sideHeight = $rect->bottom - $rect->top + 1;
+        $sizePenalty = abs(self::GAP_APPROX_SIZE - $sideWidth) + abs(self::GAP_APPROX_SIZE - $sideHeight);
+
+        return max(0.4, 0.9 - ($sizePenalty / 200));
+    }
+
+    /** @param list<DetectionCandidate> $candidates
+     *  @return list<DetectionCandidate>
+     */
+    private function rankCandidates(array $candidates): array
+    {
+        usort($candidates, function (DetectionCandidate $left, DetectionCandidate $right): int {
+            $priorityDiff = $this->candidatePriority($left->method) <=> $this->candidatePriority($right->method);
+            if ($priorityDiff !== 0) {
+                return $priorityDiff;
+            }
+
+            $confidenceDiff = $right->confidence <=> $left->confidence;
+            if ($confidenceDiff !== 0) {
+                return $confidenceDiff;
+            }
+
+            return $left->rect->left <=> $right->rect->left;
+        });
+
+        return $candidates;
+    }
+
+    private function candidatePriority(string $method): int
+    {
+        return match ($method) {
+            'template-mask' => 0,
+            'template-content' => 1,
+            'image' => 2,
+            'estimate' => 3,
+            default => 4,
+        };
+    }
+
+    /** @param list<DetectionCandidate> $candidates
+     *  @return list<DetectionCandidate>
+     */
+    private function deduplicateCandidates(array $candidates): array
+    {
+        $unique = [];
+        $seen = [];
+
+        foreach ($candidates as $candidate) {
+            $key = $candidate->method . ':' . $candidate->rect->left . ':' . $candidate->rect->top;
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $candidate;
+        }
+
+        return $unique;
+    }
+
+    /** @param list<DetectionCandidate> $candidates
+     *  @return list<array<string, mixed>>
+     */
+    private function candidateSummaries(array $candidates): array
+    {
+        $summaries = [];
+        foreach (array_slice($candidates, 0, self::MAX_LOGGED_CANDIDATES) as $candidate) {
+            $summaries[] = [
+                'method' => $candidate->method,
+                'left' => $candidate->rect->left,
+                'top' => $candidate->rect->top,
+                'right' => $candidate->rect->right,
+                'bottom' => $candidate->rect->bottom,
+                'confidence' => $candidate->confidence,
+                'diagnostics' => $candidate->diagnostics,
+            ];
+        }
+
+        return $summaries;
+    }
+
+    private function requestChallenge(bool $debug, int $challengeAttempt): CaptchaChallenge
+    {
+        $clientUid = CaptchaApi::newClientUid();
+        Debug::log($debug, 'step=getCheckImagePoint retry clientUid=' . $clientUid, [
+            'challenge_attempt' => $challengeAttempt,
+        ]);
+
+        $challenge = $this->captchaApi->getCheckImagePoint($clientUid);
+        $params = is_array($challenge['params'] ?? null) ? $challenge['params'] : [];
+        $captchaUuid = (string) ($params['uuid'] ?? '');
+        $bigImage = (string) ($params['bigImage'] ?? '');
+        $smallImage = (string) ($params['smallImage'] ?? '');
+        $height = (int) ($params['height'] ?? -1);
+        if ($captchaUuid === '' || $bigImage === '' || $height < 0) {
+            throw new UpstreamException('captcha retry challenge params missing', 'upstream query failed');
+        }
+
+        Debug::log($debug, 'step=getCheckImagePoint retry success=true captchaUUID=' . $captchaUuid . ' height=' . $height, [
+            'challenge_attempt' => $challengeAttempt,
+        ]);
+
+        return new CaptchaChallenge($captchaUuid, $bigImage, $smallImage, $height, $clientUid);
+    }
+
     /** @param list<array<string, mixed>> $failures */
     private function formatFailures(array $failures): string
     {
         $parts = [];
         foreach ($failures as $failure) {
             $parts[] = sprintf(
-                '#%s:left=%s,msg=%s',
+                '#%s:left=%s,method=%s,msg=%s',
                 (string) ($failure['challenge_attempt'] ?? ''),
                 (string) ($failure['attempt_left'] ?? ''),
+                (string) ($failure['method'] ?? ''),
                 (string) ($failure['msg'] ?? '')
             );
         }
@@ -619,121 +714,39 @@ final class CaptchaSolver
         return $left <= self::MIN_VALID_LEFT;
     }
 
-    /**
-     * @param list<array{method: string, rect: Rect, score: int}> $detections
-     * @return list<array{method: string, left: int, top: int, right: int, bottom: int, score: int}>
-     */
-    private function detectionSummaries(array $detections): array
+    /** @param list<DetectionCandidate> $candidates */
+    private function persistChallengeSamples(CaptchaChallenge $challenge, int $challengeAttempt, array $candidates, DetectionCandidate $selected, bool $debug): void
     {
-        $summaries = [];
-        foreach ($detections as $detection) {
-            $rect = $detection['rect'];
-            $summaries[] = [
-                'method' => $detection['method'],
-                'left' => $rect->left,
-                'top' => $rect->top,
-                'right' => $rect->right,
-                'bottom' => $rect->bottom,
-                'score' => $detection['score'],
-            ];
+        if (!$debug || !$this->config->bool('debug.store_captcha_samples')) {
+            return;
         }
 
-        return $summaries;
-    }
+        $dirName = sprintf('%s-%02d-%s', date('Ymd-His'), $challengeAttempt, preg_replace('/[^a-zA-Z0-9_-]+/', '-', $challenge->uuid) ?: 'captcha');
+        $dir = AppPaths::ensureDir(AppPaths::storagePath('debug/captcha/' . $dirName), true);
 
-    /**
-     * @param list<array{method: string, rect: Rect, score: int}> $detections
-     * @return list<int>
-     */
-    private function candidateOffsetsForDetections(array $detections, int $radius): array
-    {
-        $offsets = [];
-        $seen = [];
+        $big = $this->decodeBase64Image($challenge->bigImage);
+        $small = $challenge->smallImage === '' ? '' : $this->decodeBase64Image($challenge->smallImage);
 
-        foreach ($detections as $detection) {
-            foreach ($this->candidateOffsets($detection['rect']->left, $radius) as $left) {
-                if (isset($seen[$left])) {
-                    continue;
-                }
-
-                $seen[$left] = true;
-                $offsets[] = $left;
-            }
+        @file_put_contents($dir . '/big.png', $big);
+        if ($small !== '') {
+            @file_put_contents($dir . '/small.png', $small);
         }
 
-        return $offsets;
-    }
+        $metadata = json_encode([
+            'uuid' => $challenge->uuid,
+            'clientUid' => $challenge->clientUid,
+            'height' => $challenge->height,
+            'selected' => [
+                'method' => $selected->method,
+                'left' => $selected->rect->left,
+                'top' => $selected->rect->top,
+                'confidence' => $selected->confidence,
+            ],
+            'candidates' => $this->candidateSummaries($candidates),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-    /** @return list<int> */
-    private function centerOutOffsets(int $center, int $min, int $max): array
-    {
-        $offsets = [];
-        $seen = [];
-
-        $add = static function (int $value) use (&$offsets, &$seen, $min, $max): void {
-            if ($value < $min || $value > $max || isset($seen[$value])) {
-                return;
-            }
-
-            $seen[$value] = true;
-            $offsets[] = $value;
-        };
-
-        $add($center);
-        for ($delta = 1; $delta <= ($max - $min); $delta++) {
-            $add($center + $delta);
-            $add($center - $delta);
-            if (count($offsets) >= ($max - $min + 1)) {
-                break;
-            }
+        if (is_string($metadata)) {
+            @file_put_contents($dir . '/metadata.json', $metadata);
         }
-
-        return $offsets;
-    }
-
-    /**
-     * @param list<array{method: string, rect: Rect, score: int}> $detections
-     * @return list<array{method: string, rect: Rect, score: int}>
-     */
-    private function deduplicateDetections(array $detections): array
-    {
-        $unique = [];
-        $seen = [];
-
-        foreach ($detections as $detection) {
-            $key = $detection['method'] . ':' . $detection['rect']->left . ':' . $detection['rect']->top;
-            if (isset($seen[$key])) {
-                continue;
-            }
-
-            $seen[$key] = true;
-            $unique[] = $detection;
-        }
-
-        return $unique;
-    }
-
-    /** @return list<int> */
-    private function candidateOffsets(int $center, int $radius): array
-    {
-        $offsets = [];
-        $seen = [];
-
-        $add = static function (int $value) use (&$offsets, &$seen): void {
-            if ($value < self::MIN_VALID_LEFT || isset($seen[$value])) {
-                return;
-            }
-
-            $seen[$value] = true;
-            $offsets[] = $value;
-        };
-
-        $add($center);
-        for ($delta = 1; $delta <= $radius; $delta++) {
-            $add($center - $delta);
-            $add($center + $delta);
-        }
-
-        return $offsets;
     }
 }

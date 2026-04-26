@@ -20,6 +20,7 @@ return [
     ],
     'debug' => [
         'enabled' => false,
+        'store_captcha_samples' => false,
     ],
     'log' => [
         'max_detail_length' => 512,
