@@ -18,9 +18,9 @@ final class CaptchaSolver
     private const MAX_OFFSET_RADIUS = 8;
     private const MIN_VALID_LEFT = 30;
     private const MAX_CHALLENGE_ATTEMPTS = 5;
+    private const DEFAULT_LEFT = 80;
     private const TEMPLATE_TOP_MARGIN = 8;
-    private const TEMPLATE_SEARCH_RADIUS = 48;
-    private const TEMPLATE_MAX_AVERAGE_SCORE = 90;
+    private const TEMPLATE_MIN_AVERAGE_SCORE = 28;
     private const TEMPLATE_SAMPLE_STEP = 3;
     private const TEMPLATE_ALPHA_THRESHOLD = 16;
     private const MIN_COMPONENT_AREA = 900;
@@ -66,16 +66,14 @@ final class CaptchaSolver
                 return $result;
             }
 
-            foreach ($result['failures'] as $failure) {
-                $failures[] = $failure;
-            }
+            $failures[] = $result['failure'];
         }
 
         throw new UpstreamException('checkImage failed after fresh challenge attempts=' . $this->formatFailures($failures), 'upstream query failed');
     }
 
     /**
-     * @return array{rect: Rect, response: array<string, mixed>}|array{failures: list<array<string, mixed>>}
+     * @return array{rect: Rect, response: array<string, mixed>}|array{failure: array<string, mixed>}
      */
     private function trySolveChallenge(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, int $challengeAttempt, bool $debug): array
     {
@@ -85,6 +83,9 @@ final class CaptchaSolver
         if ($offsets === []) {
             throw new UpstreamException('captcha candidate offsets are empty', 'upstream query failed');
         }
+
+        $offsetIndex = min($challengeAttempt - 1, count($offsets) - 1);
+        $left = $offsets[$offsetIndex];
 
         Debug::log($debug, sprintf(
             'step=detect method=%s left=%d top=%d right=%d bottom=%d',
@@ -96,43 +97,41 @@ final class CaptchaSolver
         ), [
             'challenge_attempt' => $challengeAttempt,
             'candidate_offsets' => array_slice($offsets, 0, 12),
+            'selected_offset_index' => $offsetIndex,
+            'selected_left' => $left,
             'candidates' => $this->detectionSummaries($detections),
         ]);
 
-        $failures = [];
-        foreach ($offsets as $offsetIndex => $left) {
-            Debug::log($debug, 'step=checkImage attempt_left=' . $left, [
+        Debug::log($debug, 'step=checkImage attempt_left=' . $left, [
+            'challenge_attempt' => $challengeAttempt,
+            'selected_offset_index' => $offsetIndex,
+        ]);
+
+        $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
+        if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
+            $box->right += $left - $box->left;
+            $box->left = $left;
+            Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')), [
                 'challenge_attempt' => $challengeAttempt,
                 'selected_offset_index' => $offsetIndex,
+                'selected_left' => $left,
             ]);
 
-            $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
-            if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
-                $box->right += $left - $box->left;
-                $box->left = $left;
-                Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')), [
-                    'challenge_attempt' => $challengeAttempt,
-                    'selected_offset_index' => $offsetIndex,
-                    'selected_left' => $left,
-                ]);
-
-                return ['rect' => $box, 'response' => $response];
-            }
-
-            $failure = [
-                'challenge_attempt' => $challengeAttempt,
-                'attempt_left' => $left,
-                'selected_offset_index' => $offsetIndex,
-                'code' => $response['code'] ?? null,
-                'success' => $response['success'] ?? null,
-                'msg' => $response['msg'] ?? null,
-            ];
-
-            Debug::log($debug, 'step=checkImage rejected', $failure);
-            $failures[] = $failure;
+            return ['rect' => $box, 'response' => $response];
         }
 
-        return ['failures' => $failures];
+        $failure = [
+            'challenge_attempt' => $challengeAttempt,
+            'attempt_left' => $left,
+            'selected_offset_index' => $offsetIndex,
+            'code' => $response['code'] ?? null,
+            'success' => $response['success'] ?? null,
+            'msg' => $response['msg'] ?? null,
+        ];
+
+        Debug::log($debug, 'step=checkImage rejected', $failure);
+
+        return ['failure' => $failure];
     }
 
     /**
@@ -206,7 +205,7 @@ final class CaptchaSolver
         ];
     }
 
-    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint, ?int $centerLeft = null): ?Rect
+    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint): ?Rect
     {
         if ($smallEncoded === '') {
             return null;
@@ -242,19 +241,15 @@ final class CaptchaSolver
 
         $startLeft = self::MIN_VALID_LEFT;
         $endLeft = $maxTemplateLeft;
-        if ($centerLeft !== null && $centerLeft >= self::MIN_VALID_LEFT) {
-            $startLeft = max(self::MIN_VALID_LEFT, $centerLeft - self::TEMPLATE_SEARCH_RADIUS);
-            $endLeft = min($endLeft, $centerLeft + self::TEMPLATE_SEARCH_RADIUS);
-        }
 
-        $bestScore = PHP_INT_MAX;
+        $bestScore = -1;
         $bestLeft = -1;
         $bestTop = $startTop;
 
         for ($top = $startTop; $top <= $endTop; $top++) {
             for ($left = $startLeft; $left <= $endLeft; $left++) {
                 $score = $this->templateScore($big, $small, $left, $top, $smallWidth, $smallHeight);
-                if ($score < $bestScore) {
+                if ($score > $bestScore) {
                     $bestScore = $score;
                     $bestLeft = $left;
                     $bestTop = $top;
@@ -262,7 +257,7 @@ final class CaptchaSolver
             }
         }
 
-        if ($bestLeft < self::MIN_VALID_LEFT || $bestScore > self::TEMPLATE_MAX_AVERAGE_SCORE) {
+        if ($bestLeft < self::MIN_VALID_LEFT || $bestScore < self::TEMPLATE_MIN_AVERAGE_SCORE) {
             return null;
         }
 
@@ -413,7 +408,7 @@ final class CaptchaSolver
         $width = imagesx($img);
         $height = imagesy($img);
         $top = $this->clamp($topHint, 0, max(0, $height - self::GAP_APPROX_SIZE));
-        $bestLeft = self::MIN_VALID_LEFT;
+        $bestLeft = $this->clamp(self::DEFAULT_LEFT, self::MIN_VALID_LEFT, max(self::MIN_VALID_LEFT, $width - self::GAP_APPROX_SIZE));
         $bestScore = -1;
 
         $maxLeft = max(self::MIN_VALID_LEFT, $width - self::GAP_APPROX_SIZE);
@@ -529,22 +524,14 @@ final class CaptchaSolver
                     continue;
                 }
 
-                $smallRgb = [
-                    'r' => ($smallColor >> 16) & 0xFF,
-                    'g' => ($smallColor >> 8) & 0xFF,
-                    'b' => $smallColor & 0xFF,
-                ];
                 $bigRgb = $this->rgbAt($big, $offsetX + $x, $offsetY + $y);
-
-                $score += abs($smallRgb['r'] - $bigRgb['r']);
-                $score += abs($smallRgb['g'] - $bigRgb['g']);
-                $score += abs($smallRgb['b'] - $bigRgb['b']);
+                $score += $this->gapPixelScore($bigRgb);
                 $samples++;
             }
         }
 
         if ($samples === 0) {
-            return PHP_INT_MAX;
+            return -1;
         }
 
         return intdiv($score, $samples);
