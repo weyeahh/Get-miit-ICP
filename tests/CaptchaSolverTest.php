@@ -20,10 +20,16 @@ final class CaptchaSolverTest
     private static function candidateOffsetsRejectSuspiciousLeft(): void
     {
         $solver = self::solverWithoutConstructor();
-        $offsets = self::invoke($solver, 'candidateOffsets', [5, 8]);
+        $offsets = self::invoke($solver, 'candidateOffsets', [0, 8]);
 
-        if ($offsets !== []) {
-            throw new \RuntimeException('captcha offsets should reject suspicious left edge values');
+        if ($offsets === []) {
+            throw new \RuntimeException('captcha offsets should still provide fallback candidates');
+        }
+
+        foreach ($offsets as $offset) {
+            if ($offset < 5) {
+                throw new \RuntimeException('captcha offsets should reject suspicious left edge values');
+            }
         }
     }
 

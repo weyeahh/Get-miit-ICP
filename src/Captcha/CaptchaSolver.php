@@ -16,11 +16,11 @@ final class CaptchaSolver
     private const COLOR_TOLERANCE = 12;
     private const RELAXED_COLOR_TOLERANCE = 24;
     private const MAX_OFFSET_RADIUS = 8;
-    private const MIN_VALID_LEFT = 30;
+    private const MIN_VALID_LEFT = 5;
     private const MAX_CHALLENGE_ATTEMPTS = 5;
     private const DEFAULT_LEFT = 80;
     private const TEMPLATE_TOP_MARGIN = 8;
-    private const TEMPLATE_MIN_AVERAGE_SCORE = 28;
+    private const TEMPLATE_MIN_AVERAGE_SCORE = 18;
     private const TEMPLATE_SAMPLE_STEP = 3;
     private const TEMPLATE_ALPHA_THRESHOLD = 16;
     private const MIN_COMPONENT_AREA = 900;
@@ -135,38 +135,32 @@ final class CaptchaSolver
     }
 
     /**
-     * @return list<array{method: string, rect: Rect}>
+     * @return list<array{method: string, rect: Rect, score: int}>
      */
     private function detectCandidates(string $bigImage, string $smallImage, int $topHint, bool $debug): array
     {
-        $detections = [
-            ['method' => 'image', 'rect' => $this->detectSquareBase64WithHint($bigImage, $topHint)],
-        ];
-
-        if ($this->isSuspiciousLeft($detections[0]['rect']->left)) {
-            Debug::log($debug, 'step=detect rejected_suspicious_left', [
-                'method' => 'image',
-                'left' => $detections[0]['rect']->left,
-                'min_valid_left' => self::MIN_VALID_LEFT,
-            ]);
-
-            $detections[0] = ['method' => 'estimate', 'rect' => $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint)];
-        }
+        $detections = [];
 
         $template = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint);
-        if ($template !== null) {
-            if ($this->isSuspiciousLeft($template->left)) {
-                Debug::log($debug, 'step=detect rejected_suspicious_left', [
-                    'method' => 'template',
-                    'left' => $template->left,
-                    'min_valid_left' => self::MIN_VALID_LEFT,
-                ]);
-            } else {
-                array_unshift($detections, ['method' => 'template', 'rect' => $template]);
-            }
+        if ($template !== null && !$this->isSuspiciousLeft($template['rect']->left)) {
+            $detections[] = $template;
         }
 
-        return $detections;
+        $estimate = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
+        $detections[] = ['method' => 'estimate', 'rect' => $estimate, 'score' => 0];
+
+        $image = $this->detectSquareBase64WithHint($bigImage, $topHint);
+        if ($this->isSuspiciousLeft($image->left)) {
+            Debug::log($debug, 'step=detect rejected_suspicious_left', [
+                'method' => 'image',
+                'left' => $image->left,
+                'min_valid_left' => self::MIN_VALID_LEFT,
+            ]);
+        } else {
+            $detections[] = ['method' => 'image', 'rect' => $image, 'score' => 0];
+        }
+
+        return $this->deduplicateDetections($detections);
     }
 
     private function detectSquareBase64WithHint(string $encoded, int $topHint): Rect
@@ -205,7 +199,8 @@ final class CaptchaSolver
         ];
     }
 
-    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint): ?Rect
+    /** @return array{method: string, rect: Rect, score: int}|null */
+    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint): ?array
     {
         if ($smallEncoded === '') {
             return null;
@@ -261,13 +256,17 @@ final class CaptchaSolver
             return null;
         }
 
-        return new Rect(
-            $bestLeft,
-            $bestTop,
-            $bestLeft + $smallWidth - 1,
-            $bestTop + $smallHeight - 1,
-            $smallWidth * $smallHeight
-        );
+        return [
+            'method' => 'template',
+            'rect' => new Rect(
+                $bestLeft,
+                $bestTop,
+                $bestLeft + $smallWidth - 1,
+                $bestTop + $smallHeight - 1,
+                $smallWidth * $smallHeight
+            ),
+            'score' => $bestScore,
+        ];
     }
 
     private function estimateGapFromBinaryBase64WithHint(string $encoded, int $topHint): Rect
@@ -560,12 +559,12 @@ final class CaptchaSolver
 
     private function isSuspiciousLeft(int $left): bool
     {
-        return $left < self::MIN_VALID_LEFT;
+        return $left <= self::MIN_VALID_LEFT;
     }
 
     /**
-     * @param list<array{method: string, rect: Rect}> $detections
-     * @return list<array{method: string, left: int, top: int, right: int, bottom: int}>
+     * @param list<array{method: string, rect: Rect, score: int}> $detections
+     * @return list<array{method: string, left: int, top: int, right: int, bottom: int, score: int}>
      */
     private function detectionSummaries(array $detections): array
     {
@@ -578,6 +577,7 @@ final class CaptchaSolver
                 'top' => $rect->top,
                 'right' => $rect->right,
                 'bottom' => $rect->bottom,
+                'score' => $detection['score'],
             ];
         }
 
@@ -585,7 +585,7 @@ final class CaptchaSolver
     }
 
     /**
-     * @param list<array{method: string, rect: Rect}> $detections
+     * @param list<array{method: string, rect: Rect, score: int}> $detections
      * @return list<int>
      */
     private function candidateOffsetsForDetections(array $detections, int $radius): array
@@ -605,6 +605,28 @@ final class CaptchaSolver
         }
 
         return $offsets;
+    }
+
+    /**
+     * @param list<array{method: string, rect: Rect, score: int}> $detections
+     * @return list<array{method: string, rect: Rect, score: int}>
+     */
+    private function deduplicateDetections(array $detections): array
+    {
+        $unique = [];
+        $seen = [];
+
+        foreach ($detections as $detection) {
+            $key = $detection['method'] . ':' . $detection['rect']->left . ':' . $detection['rect']->top;
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $detection;
+        }
+
+        return $unique;
     }
 
     /** @return list<int> */
