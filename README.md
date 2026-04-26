@@ -130,10 +130,10 @@
 7. 获取 domain 锁成功后再次读取缓存，避免锁等待后的重复上游查询
 8. 只有真正准备访问上游时，`QueryGuard` 才执行全局、IP、domain 频控与冷却判断
 9. `MiitQueryService` 执行完整查询流程
-10. `AuthApi` 请求 `/auth` 获取 `Token`
-11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
+10. `AuthApi` 请求 `/auth` 获取 `Token`（含指数退避重试）
+11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战（含指数退避重试）
 12. `CaptchaSolver` 会优先基于 `bigImage` 的灰色缺口检测生成候选，并辅以模板对比和近似兜底生成备选坐标；每个 challenge 只提交一个当前最优候选，如果校验失败则立即重新获取新的 challenge，再切换到下一类候选假设继续识别，避免同一个 `captchaUUID` 在首次失败后继续提交而被上游直接判定为过期
-13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
+13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition` 和 `queryDetail`（含指数退避重试）
 14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
 16. `MiitQueryService` 对详情结果执行必填字段规范化与校验
@@ -611,6 +611,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 18. 验证码求解会优先从 `bigImage` 的 `topHint` 区域自适应采样实际缺口背景色，并配置 4 组预置颜色回退轮询；同时将模板搜索改为两步粗精扫描（粗搜 step=12 选 top-3 → 精搜 ±12px step=3），降低事件循环阻塞时间。
 19. 由于当前上游在同一个 `captchaUUID` 首次校验失败后通常会直接把后续提交判定为过期，`CaptchaSolver` 现在改为每个 challenge 只提交一个候选；一旦失败，立即获取新的 challenge，并轮换到下一类候选假设继续尝试。
 20. 验证码求解成功后，业务层会写回实际成功 challenge 对应的 `Uuid` 和 `Sign`，避免内部重试获取新 challenge 后 header 仍沿用第一次 uuid 的状态错配问题。
+21. 上游接口调用（auth、getCheckImagePoint、queryByCondition、queryDetail）均带指数退避重试（500ms → 1000ms → 2000ms，最多 3 次），应对工信部服务端的临时性波动。
 21. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
 22. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
 23. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
@@ -637,7 +638,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 6. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
 7. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
 8. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
-9. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
+9. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类；上游调用均带指数退避重试，应对临时性波动。
 10. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
 11. 日志系统是辅助能力，失败时不会反向影响主响应契约。
 12. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。

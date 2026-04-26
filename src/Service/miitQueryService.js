@@ -5,7 +5,7 @@ import { MiitClient } from '../Api/miitClient.js';
 import { CaptchaSolver } from '../Captcha/captchaSolver.js';
 import { MiitException, RecordNotFoundException, UpstreamException } from '../Exception/miitException.js';
 import { Debug } from '../Support/debug.js';
-import { epochSeconds } from '../Support/time.js';
+import { epochSeconds, sleep } from '../Support/time.js';
 
 const DETAIL_FIELDS = ['domain', 'unitName', 'mainLicence', 'serviceLicence', 'natureName', 'leaderName', 'updateRecordTime'];
 
@@ -36,13 +36,13 @@ export class MiitQueryService {
     const solver = new CaptchaSolver(client, captchaApi);
 
     await Debug.log(debug, `step=auth timestamp=${timestamp}`);
-    const authResponse = await authApi.auth(timestamp);
+    const authResponse = await this.retryUpstream(() => authApi.auth(timestamp));
     await Debug.log(debug, `step=auth success=true expire=${String(authResponse.params?.expire ?? '')}`);
 
     const clientUid = CaptchaApi.newClientUid();
     await Debug.log(debug, `step=getCheckImagePoint clientUid=${clientUid}`);
 
-    const challenge = await captchaApi.getCheckImagePoint(clientUid);
+    const challenge = await this.retryUpstream(() => captchaApi.getCheckImagePoint(clientUid));
     const params = challenge.params !== null && typeof challenge.params === 'object' ? challenge.params : {};
     const captchaUuid = String(params.uuid ?? '');
     const bigImage = String(params.bigImage ?? '');
@@ -66,7 +66,7 @@ export class MiitQueryService {
     client.setUuid(solvedUuid);
 
     await Debug.log(debug, `step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=${domain} serviceType=1`);
-    const queryResponse = await icpApi.queryByCondition(domain);
+    const queryResponse = await this.retryUpstream(() => icpApi.queryByCondition(domain));
     if ((queryResponse.success ?? false) !== true || (queryResponse.code ?? 0) !== 200) {
       throw new UpstreamException(`queryByCondition rejected: code=${String(queryResponse.code ?? '')} msg=${String(queryResponse.msg ?? '')}`, 'upstream query failed');
     }
@@ -115,7 +115,7 @@ export class MiitQueryService {
 
     let detailResponse;
     try {
-      detailResponse = await icpApi.queryDetail(mainId, domainId, serviceId);
+      detailResponse = await this.retryUpstream(() => icpApi.queryDetail(mainId, domainId, serviceId));
     } catch (error) {
       if (error instanceof UpstreamException) {
         const fallback = await this.fallbackToListDetail(item, debug, 'queryDetail', error.message);
@@ -388,6 +388,19 @@ export class MiitQueryService {
     }
 
     return samples;
+  }
+
+  async retryUpstream(fn, maxRetries = 3, baseDelay = 500) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        if (attempt === maxRetries || !(error instanceof UpstreamException)) {
+          throw error;
+        }
+        await sleep(baseDelay * Math.pow(2, attempt));
+      }
+    }
   }
 }
 
