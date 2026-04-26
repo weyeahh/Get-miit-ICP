@@ -14,6 +14,8 @@ const ENV_MAP = new Map([
   ['MIIT_RATE_LIMIT_DOMAIN_WAIT_INTERVAL_MILLISECONDS', 'ratelimit.domain_wait_interval_milliseconds'],
   ['MIIT_DEBUG_ENABLED', 'debug.enabled'],
   ['MIIT_DEBUG_STORE_CAPTCHA_SAMPLES', 'debug.store_captcha_samples'],
+  ['MIIT_API_KEY_ENABLED', 'auth.api_key_enabled'],
+  ['MIIT_API_KEY', 'auth.api_key'],
   ['MIIT_LOG_MAX_DETAIL_LENGTH', 'log.max_detail_length'],
 ]);
 

@@ -27,6 +27,7 @@
 12. 增加 queryByCondition 候选项诊断、标识符字段变体兼容和列表详情兜底。
 13. 增加验证码候选置信度日志与可选样本落盘，便于离线比对真实 challenge。
 14. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
+15. 增加可选 API key 鉴权，可在配置中开启并要求请求通过 `api_key` 查询参数或 `x-api-key` 请求头提供密钥。
 
 ## Project Origin
 
@@ -269,7 +270,9 @@ config/app.js
 11. `ratelimit.domain_wait_interval_milliseconds`
 12. `debug.enabled`
 13. `debug.store_captcha_samples`
-14. `log.max_detail_length`
+14. `auth.api_key_enabled`
+15. `auth.api_key`
+16. `log.max_detail_length`
 
 若环境变量和配置文件同时存在，环境变量优先级更高。
 
@@ -290,28 +293,36 @@ export default {
 
     ratelimit: {
         // 全局每秒允许进入上游查询链路的最大请求数。
-        global_qps: 3,
+        global_qps: 5,
 
         // 单个 IP 每分钟允许进入上游查询链路的最大请求数。
-        ip_per_minute: 20,
+        ip_per_minute: 60,
 
         // 单个 domain 在指定窗口内允许进入上游查询链路的最大请求数。
-        domain_per_window: 3,
+        domain_per_window: 10,
 
-        // domain 限流窗口大小，单位：秒。默认 300，即 5 分钟。
-        domain_window_seconds: 300,
+        // domain 限流窗口大小，单位：秒。默认 120，即 2 分钟。
+        domain_window_seconds: 120,
 
         // 单个 domain 在上游失败后进入冷却状态的时长，单位：秒。
-        domain_cooldown_seconds: 120,
+        domain_cooldown_seconds: 60,
 
         // 全局冷却时长，单位：秒。用于上游异常后短时间减压。
-        global_cooldown_seconds: 15,
+        global_cooldown_seconds: 10,
 
         // 同一个 domain 的并发请求在等待已有查询结果时的最长等待时间，单位：秒。
         domain_wait_timeout_seconds: 3,
 
         // 等待期间轮询缓存的间隔，单位：毫秒。
         domain_wait_interval_milliseconds: 250,
+    },
+
+    auth: {
+        // 是否开启 API key 鉴权。开启后请求必须携带 x-api-key 头。
+        api_key_enabled: false,
+
+        // API key 值，请求必须匹配此值才能通过鉴权。
+        api_key: '',
     },
 
     debug: {
@@ -374,6 +385,12 @@ export default {
 14. `log.max_detail_length`
     控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
 
+15. `auth.api_key_enabled`
+    控制是否开启 API key 鉴权。开启后每个请求必须在 `api_key` 查询参数或 `x-api-key` 请求头中提供密钥，值与 `auth.api_key` 匹配才能通过。查询参数和请求头同时存在时优先使用请求头。
+
+16. `auth.api_key`
+    API key 值。当 `auth.api_key_enabled` 为 `true` 时，请求的 `x-api-key` 头必须与此值完全一致。
+
 边界行为说明：
 
 1. 所有整型配置都会经过 `AppConfig` 的上下界夹紧，不会直接相信配置文件中的原始值。
@@ -393,6 +410,8 @@ MIIT_CACHE_SUCCESS_TTL=43200
 MIIT_RATE_LIMIT_GLOBAL_QPS=5
 MIIT_DEBUG_ENABLED=true
 MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=true
+MIIT_API_KEY_ENABLED=true
+MIIT_API_KEY=your-secret-key
 ```
 
 这些环境变量会分别覆盖：
@@ -401,6 +420,8 @@ MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=true
 2. `ratelimit.global_qps`
 3. `debug.enabled`
 4. `debug.store_captcha_samples`
+5. `auth.api_key_enabled`
+6. `auth.api_key`
 
 推荐调整策略：
 
@@ -472,6 +493,19 @@ HTTP status: `200`
   "code": 400,
   "message": "domain format is invalid",
   "data": null
+}
+```
+
+API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时）。可通过 `api_key` 查询参数或 `x-api-key` 请求头提供。
+
+```json
+{
+  "code": 401,
+  "message": "unauthorized",
+  "data": {
+    "domain": "",
+    "detail": "invalid or missing API key"
+  }
 }
 ```
 

@@ -34,6 +34,22 @@ export async function handleQuery(request, response) {
   try {
     config = new AppConfig();
     EnvironmentGuard.assertRuntimeReady();
+
+    if (config.bool('auth.api_key_enabled')) {
+      const expectedKey = config.string('auth.api_key');
+      const headerKey = readHeader(request, 'x-api-key');
+      const queryKey = queryParamLast(request.url, 'api_key') ?? '';
+      const requestKey = headerKey !== '' ? headerKey : queryKey;
+      if (requestKey === '' || requestKey !== expectedKey) {
+        JsonResponse.send(response, {
+          code: 401,
+          message: 'unauthorized',
+          data: { domain: '', detail: 'invalid or missing API key' },
+        }, 401);
+        return;
+      }
+    }
+
     const normalizer = new DomainNormalizer();
     queryCache = new QueryCache(new FileCache(), config);
     guard = new QueryGuard(new FileRateLimiter(), config);
@@ -248,4 +264,15 @@ function queryParamLast(requestUrl, name) {
   const url = new URL(requestUrl, 'http://127.0.0.1');
   const values = url.searchParams.getAll(name);
   return values.length === 0 ? null : values[values.length - 1];
+}
+
+function readHeader(request, name) {
+  const key = name.toLowerCase();
+  for (const [header, value] of Object.entries(request.headers)) {
+    if (header.toLowerCase() === key) {
+      return String(value);
+    }
+  }
+
+  return '';
 }
