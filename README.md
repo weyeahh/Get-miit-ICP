@@ -159,7 +159,7 @@
    负责缓存文件的加锁读取、完整性校验写入和带锁轻量级过期清理。
 
 8. `src/Api/MiitClient.php`
-   通用 HTTP 客户端，维护请求头、Cookie、超时控制、上游错误截断和请求结束后的 cURL 句柄释放。
+   通用 HTTP 客户端，维护请求头、Cookie、超时控制和上游错误截断。
 
 9. `src/Api/AuthApi.php`
    封装 `auth` 接口和 `authKey` 生成逻辑，并把鉴权协议失败统一归类为上游错误。
@@ -561,7 +561,7 @@ HTTP status: `200`
 21. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
 22. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
 23. 验证码识别失败、图片解码失败、`checkImage` 偏移尝试耗尽等路径也统一归类为 `UpstreamException`，不再错误落入内部错误分支。
-24. `MiitClient` 会截断写入日志的上游错误详情，并在请求结束后释放 cURL 句柄，防止异常响应体无限放大日志体积和长进程资源累积。
+24. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积；在 PHP 8+ 中不再显式调用已弃用的 `curl_close()`。
 25. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
 26. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
 27. `Debug` 会把流程诊断写入结构化日志，并同步尝试写入 stderr；HTTP 响应仍保持错误脱敏，不会因为开启 debug 而暴露内部异常。
