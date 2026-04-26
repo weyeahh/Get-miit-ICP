@@ -142,7 +142,7 @@ final class CaptchaSolver
         $detections = [];
 
         $template = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint);
-        if ($template !== null && !$this->isSuspiciousLeft($template['rect']->left)) {
+        if ($template !== null) {
             $detections[] = $template;
         }
 
@@ -407,13 +407,15 @@ final class CaptchaSolver
         $width = imagesx($img);
         $height = imagesy($img);
         $top = $this->clamp($topHint, 0, max(0, $height - self::GAP_APPROX_SIZE));
-        $bestLeft = $this->clamp(self::DEFAULT_LEFT, self::MIN_VALID_LEFT, max(self::MIN_VALID_LEFT, $width - self::GAP_APPROX_SIZE));
+        $minLeft = self::MIN_VALID_LEFT;
+        $maxLeft = max($minLeft, $width - self::GAP_APPROX_SIZE);
+        $defaultLeft = $this->clamp(self::DEFAULT_LEFT, $minLeft, $maxLeft);
+        $bestLeft = $defaultLeft;
         $bestScore = -1;
 
-        $maxLeft = max(self::MIN_VALID_LEFT, $width - self::GAP_APPROX_SIZE);
-        for ($left = self::MIN_VALID_LEFT; $left <= $maxLeft; $left++) {
+        foreach ($this->centerOutOffsets($defaultLeft, $minLeft, $maxLeft) as $left) {
             $score = $this->windowScore($img, $left, $top, self::GAP_APPROX_SIZE, $width, $height);
-            if ($score > $bestScore) {
+            if ($score > $bestScore || ($score === $bestScore && abs($left - $defaultLeft) < abs($bestLeft - $defaultLeft))) {
                 $bestScore = $score;
                 $bestLeft = $left;
             }
@@ -601,6 +603,33 @@ final class CaptchaSolver
 
                 $seen[$left] = true;
                 $offsets[] = $left;
+            }
+        }
+
+        return $offsets;
+    }
+
+    /** @return list<int> */
+    private function centerOutOffsets(int $center, int $min, int $max): array
+    {
+        $offsets = [];
+        $seen = [];
+
+        $add = static function (int $value) use (&$offsets, &$seen, $min, $max): void {
+            if ($value < $min || $value > $max || isset($seen[$value])) {
+                return;
+            }
+
+            $seen[$value] = true;
+            $offsets[] = $value;
+        };
+
+        $add($center);
+        for ($delta = 1; $delta <= ($max - $min); $delta++) {
+            $add($center + $delta);
+            $add($center - $delta);
+            if (count($offsets) >= ($max - $min + 1)) {
+                break;
             }
         }
 
