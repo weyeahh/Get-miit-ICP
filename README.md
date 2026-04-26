@@ -98,6 +98,7 @@
 |  `- ratelimit/
 |- tests/
 |  |- bootstrap.php
+|  |- CaptchaSolverTest.php
 |  |- DomainNormalizerTest.php
 |  |- EnvironmentGuardTest.php
 |  |- JsonResponseTest.php
@@ -126,7 +127,7 @@
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-12. `CaptchaSolver` 优先使用 `smallImage` 对 `bigImage` 做模板匹配来定位缺口坐标，失败时再回退到大图启发式识别，并调用 `/image/checkImage`
+12. `CaptchaSolver` 先用大图启发式识别缺口，再使用 `smallImage` 对候选区域做局部模板校准，并调用 `/image/checkImage`
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
@@ -168,7 +169,7 @@
     封装验证码获取与校验接口，并把验证码协议失败统一归类为上游错误。
 
 11. `src/Captcha/CaptchaSolver.php`
-    验证码识别核心模块，负责读取图片、识别缺口、枚举候选横坐标、调用校验接口。
+    验证码识别核心模块，负责读取图片、识别缺口、过滤极左误检、枚举候选横坐标、调用校验接口。
 
 12. `src/Api/IcpApi.php`
     封装备案列表和详情查询接口。
@@ -555,7 +556,7 @@ HTTP status: `200`
 15. 成功结果默认缓存 24 小时。
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-18. 验证码求解优先走 `smallImage` 模板匹配，只有模板匹配不可用时才回退到大图启发式识别；同时会过滤明显无效的极左候选值，减少 `left=0` 这类退化结果。
+18. 验证码求解先走大图启发式识别，再用 `smallImage` 在候选区域附近做局部模板校准，避免全图模板扫描导致验证码窗口过期；同时会过滤明显无效的极左候选值，减少 `left=5` 这类退化结果。
 19. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
 20. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
 21. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
@@ -578,14 +579,15 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
-6. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
-7. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
-8. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
-9. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
-10. 日志系统是辅助能力，失败时不会反向影响主响应契约。
-11. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
-12. 当前 `EnvironmentGuardTest` 已经真实调用 `EnvironmentGuard::assertRuntimeReady()`，会根据当前环境中是否存在 `curl`/`gd` 断言预检行为，而不再只是检查 `json`。
+5. 验证码候选横坐标会丢弃极左异常值，并围绕识别中心做有限半径试探，避免单个误检值直接导致验证码失败。
+6. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
+7. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
+8. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
+9. 上游异常、签名失效、鉴权失败、风控等情况统一落到 `UpstreamException` 路径，而本地存储与环境问题会走不同分类。
+10. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
+11. 日志系统是辅助能力，失败时不会反向影响主响应契约。
+12. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
+13. 当前 `EnvironmentGuardTest` 已经真实调用 `EnvironmentGuard::assertRuntimeReady()`，会根据当前环境中是否存在 `curl`/`gd` 断言预检行为，而不再只是检查 `json`。
 
 ## Storage
 
@@ -622,7 +624,7 @@ HTTP status: `200`
 5. 当前没有 stale 数据回退策略，500 时不会回放历史成功缓存。
 6. 同域 singleflight 当前是等待后回读缓存的模式，不是长轮询队列或作业系统。
 7. 仓库附带了 `composer.json` 和基础测试骨架，但当前环境若没有 Composer CLI 仍无法执行 `composer validate --strict`。
-8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界、`404` 可缓存标志、列表候选项选择、标识符字段变体和列表详情兜底，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。
+8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界、`404` 可缓存标志、列表候选项选择、标识符字段变体、列表详情兜底、验证码极左候选过滤和验证码候选去重顺序，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。
 
 这意味着该项目更适合作为特定场景下的工程化工具，而非长期稳定的官方兼容方案。
 
@@ -634,18 +636,21 @@ HTTP status: `200`
 
 1. `step=auth`
 2. `step=getCheckImagePoint`
-3. `step=detect`
+3. `step=detect method=...`
 4. `step=checkImage attempt_left=...`
-5. `step=query`
-6. `step=queryByCondition success=true`
-7. `step=queryByCondition selected_match`
-8. `step=queryByCondition exact_matches_without_valid_identifiers`
-9. `step=queryByCondition missing_valid_identifiers`
-10. `step=queryDetail`
-11. `step=queryByCondition fallback=list_item_detail`
-12. `step=queryDetail fallback=list_item_detail`
+5. `step=checkImage rejected`
+6. `step=query`
+7. `step=queryByCondition success=true`
+8. `step=queryByCondition selected_match`
+9. `step=queryByCondition exact_matches_without_valid_identifiers`
+10. `step=queryByCondition missing_valid_identifiers`
+11. `step=queryDetail`
+12. `step=queryByCondition fallback=list_item_detail`
+13. `step=queryDetail fallback=list_item_detail`
 
 `queryByCondition` 相关 debug 日志会记录列表数量、候选项 key、原始标识符值和归一化后的标识符，用于排查上游字段变更、列表项缺少 `mainId` / `domainId` / `serviceId`、详情接口不可用等问题。
+
+验证码相关 debug 日志会记录检测方法、候选坐标、每次 `checkImage` 拒绝时的上游返回码和消息，用于排查极左误检、候选偏移不足、验证码窗口过期等问题。
 
 服务端详细错误和 debug 诊断都会写入 `storage/logs/`，用于排查验证码识别失败、接口返回异常、频控触发、上游风控和列表字段结构变化问题。
 

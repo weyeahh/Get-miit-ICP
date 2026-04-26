@@ -12,5 +12,6 @@ Miit\Tests\ResponseFormatterTest::run();
 Miit\Tests\AppConfigTest::run();
 Miit\Tests\RecordNotFoundExceptionTest::run();
 Miit\Tests\MiitQueryServiceTest::run();
+Miit\Tests\CaptchaSolverTest::run();
 
 fwrite(STDOUT, "tests passed\n");

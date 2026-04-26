@@ -15,9 +15,11 @@ final class CaptchaSolver
 {
     private const COLOR_TOLERANCE = 12;
     private const RELAXED_COLOR_TOLERANCE = 24;
-    private const MAX_OFFSET_RADIUS = 4;
-    private const MIN_VALID_LEFT = 5;
-    private const TEMPLATE_TOP_MARGIN = 12;
+    private const MAX_OFFSET_RADIUS = 8;
+    private const MIN_VALID_LEFT = 20;
+    private const TEMPLATE_TOP_MARGIN = 8;
+    private const TEMPLATE_SEARCH_RADIUS = 36;
+    private const TEMPLATE_MAX_AVERAGE_SCORE = 90;
     private const TEMPLATE_ALPHA_THRESHOLD = 16;
     private const MIN_COMPONENT_AREA = 900;
     private const MIN_SIDE_LENGTH = 24;
@@ -36,22 +38,50 @@ final class CaptchaSolver
     /** @return array{rect: Rect, response: array<string, mixed>} */
     public function solve(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, bool $debug): array
     {
-        $box = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint)
-            ?? $this->detectSquareBase64WithHint($bigImage, $topHint);
+        $detected = $this->detectSquareBase64WithHint($bigImage, $topHint);
+        if ($this->isSuspiciousLeft($detected->left)) {
+            Debug::log($debug, 'step=detect rejected_suspicious_left', [
+                'method' => 'image',
+                'left' => $detected->left,
+                'min_valid_left' => self::MIN_VALID_LEFT,
+            ]);
 
-        if ($box->left < self::MIN_VALID_LEFT) {
-            $box = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
+            $detected = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
         }
 
+        $detections = [
+            ['method' => 'image', 'rect' => $detected],
+        ];
+
+        $template = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint, $detected->left);
+        if ($template !== null) {
+            if ($this->isSuspiciousLeft($template->left)) {
+                Debug::log($debug, 'step=detect rejected_suspicious_left', [
+                    'method' => 'template',
+                    'left' => $template->left,
+                    'min_valid_left' => self::MIN_VALID_LEFT,
+                ]);
+            } else {
+                array_unshift($detections, ['method' => 'template', 'rect' => $template]);
+            }
+        }
+
+        $box = $detections[0]['rect'];
+
         Debug::log($debug, sprintf(
-            'step=detect left=%d top=%d right=%d bottom=%d',
+            'step=detect method=%s left=%d top=%d right=%d bottom=%d',
+            $detections[0]['method'],
             $box->left,
             $box->top,
             $box->right,
             $box->bottom
-        ));
+        ), [
+            'candidates' => $this->detectionSummaries($detections),
+        ]);
 
-        foreach ($this->candidateOffsets($box->left, self::MAX_OFFSET_RADIUS) as $left) {
+        $attempted = [];
+        foreach ($this->candidateOffsetsForDetections($detections, self::MAX_OFFSET_RADIUS) as $left) {
+            $attempted[] = $left;
             Debug::log($debug, 'step=checkImage attempt_left=' . $left);
             $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
             if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
@@ -61,9 +91,16 @@ final class CaptchaSolver
 
                 return ['rect' => $box, 'response' => $response];
             }
+
+            Debug::log($debug, 'step=checkImage rejected', [
+                'attempt_left' => $left,
+                'code' => $response['code'] ?? null,
+                'success' => $response['success'] ?? null,
+                'msg' => $response['msg'] ?? null,
+            ]);
         }
 
-        throw new UpstreamException('checkImage failed around detected left=' . $box->left, 'upstream query failed');
+        throw new UpstreamException('checkImage failed around detected left=' . $box->left . ' attempts=' . implode(',', $attempted), 'upstream query failed');
     }
 
     private function detectSquareBase64WithHint(string $encoded, int $topHint): Rect
@@ -72,7 +109,7 @@ final class CaptchaSolver
         return $this->detectSquareFromBinaryWithHint($imageData, $topHint);
     }
 
-    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint): ?Rect
+    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint, ?int $centerLeft = null): ?Rect
     {
         if ($smallEncoded === '') {
             return null;
@@ -101,12 +138,24 @@ final class CaptchaSolver
             $endTop = max(0, $bigHeight - $smallHeight);
         }
 
+        $maxTemplateLeft = $bigWidth - $smallWidth;
+        if ($maxTemplateLeft < self::MIN_VALID_LEFT) {
+            return null;
+        }
+
+        $startLeft = self::MIN_VALID_LEFT;
+        $endLeft = $maxTemplateLeft;
+        if ($centerLeft !== null && $centerLeft >= self::MIN_VALID_LEFT) {
+            $startLeft = max(self::MIN_VALID_LEFT, $centerLeft - self::TEMPLATE_SEARCH_RADIUS);
+            $endLeft = min($endLeft, $centerLeft + self::TEMPLATE_SEARCH_RADIUS);
+        }
+
         $bestScore = PHP_INT_MAX;
         $bestLeft = -1;
         $bestTop = $startTop;
 
         for ($top = $startTop; $top <= $endTop; $top++) {
-            for ($left = 0; $left <= $bigWidth - $smallWidth; $left++) {
+            for ($left = $startLeft; $left <= $endLeft; $left++) {
                 $score = $this->templateScore($big, $small, $left, $top, $smallWidth, $smallHeight);
                 if ($score < $bestScore) {
                     $bestScore = $score;
@@ -116,7 +165,7 @@ final class CaptchaSolver
             }
         }
 
-        if ($bestLeft < self::MIN_VALID_LEFT) {
+        if ($bestLeft < self::MIN_VALID_LEFT || $bestScore > self::TEMPLATE_MAX_AVERAGE_SCORE) {
             return null;
         }
 
@@ -267,10 +316,11 @@ final class CaptchaSolver
         $width = imagesx($img);
         $height = imagesy($img);
         $top = $this->clamp($topHint, 0, max(0, $height - self::GAP_APPROX_SIZE));
-        $bestLeft = 0;
+        $bestLeft = self::MIN_VALID_LEFT;
         $bestScore = -1;
 
-        for ($left = 0; $left <= max(0, $width - self::GAP_APPROX_SIZE); $left++) {
+        $maxLeft = max(self::MIN_VALID_LEFT, $width - self::GAP_APPROX_SIZE);
+        for ($left = self::MIN_VALID_LEFT; $left <= $maxLeft; $left++) {
             $score = $this->windowScore($img, $left, $top, self::GAP_APPROX_SIZE, $width, $height);
             if ($score > $bestScore) {
                 $bestScore = $score;
@@ -279,7 +329,7 @@ final class CaptchaSolver
         }
 
         return new Rect(
-            max(self::MIN_VALID_LEFT, $bestLeft),
+            $bestLeft,
             $top,
             min($width - 1, $bestLeft + self::GAP_APPROX_SIZE - 1),
             min($height - 1, $top + self::GAP_APPROX_SIZE - 1),
@@ -406,6 +456,55 @@ final class CaptchaSolver
     private function clamp(int $value, int $low, int $high): int
     {
         return max($low, min($high, $value));
+    }
+
+    private function isSuspiciousLeft(int $left): bool
+    {
+        return $left < self::MIN_VALID_LEFT;
+    }
+
+    /**
+     * @param list<array{method: string, rect: Rect}> $detections
+     * @return list<array{method: string, left: int, top: int, right: int, bottom: int}>
+     */
+    private function detectionSummaries(array $detections): array
+    {
+        $summaries = [];
+        foreach ($detections as $detection) {
+            $rect = $detection['rect'];
+            $summaries[] = [
+                'method' => $detection['method'],
+                'left' => $rect->left,
+                'top' => $rect->top,
+                'right' => $rect->right,
+                'bottom' => $rect->bottom,
+            ];
+        }
+
+        return $summaries;
+    }
+
+    /**
+     * @param list<array{method: string, rect: Rect}> $detections
+     * @return list<int>
+     */
+    private function candidateOffsetsForDetections(array $detections, int $radius): array
+    {
+        $offsets = [];
+        $seen = [];
+
+        foreach ($detections as $detection) {
+            foreach ($this->candidateOffsets($detection['rect']->left, $radius) as $left) {
+                if (isset($seen[$left])) {
+                    continue;
+                }
+
+                $seen[$left] = true;
+                $offsets[] = $left;
+            }
+        }
+
+        return $offsets;
     }
 
     /** @return list<int> */
