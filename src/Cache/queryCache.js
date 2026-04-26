@@ -40,6 +40,18 @@ export class QueryCache {
     }, this.config.int('cache.miss_ttl'));
   }
 
+  async getStale(domain) {
+    const payload = await this.cache.getStale?.(this.key('success', domain)) ?? null;
+    if (payload === null) {
+      return null;
+    }
+    if ((payload._schema_version ?? '') !== this.config.string('cache.schema_version')) {
+      return null;
+    }
+    const detail = payload.detail;
+    return detail !== null && typeof detail === 'object' && !Array.isArray(detail) ? detail : null;
+  }
+
   key(prefix, domain) {
     return `${prefix}:${this.config.string('cache.schema_version')}:${domain}`;
   }

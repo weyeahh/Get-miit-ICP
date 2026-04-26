@@ -34,6 +34,7 @@ export async function handleQuery(request, response) {
   try {
     config = new AppConfig();
     EnvironmentGuard.assertRuntimeReady();
+    await EnvironmentGuard.assertSharpReady();
 
     if (config.bool('auth.api_key_enabled')) {
       const expectedKey = config.string('auth.api_key');
@@ -109,6 +110,7 @@ export async function handleQuery(request, response) {
     if (mutex !== null) {
       await mutex.release();
     }
+    Logger.cleanup().catch(() => {});
   }
 }
 
@@ -225,6 +227,23 @@ async function handleError(error, response, context) {
       });
     }
 
+    if (context.queryCache !== null && context.domain !== '') {
+      const stale = await context.queryCache.getStale(context.domain);
+      if (stale !== null) {
+        await Logger.warning('returning stale cache due to upstream failure', {
+          ip: context.ip,
+          domain: context.domain,
+          detail: DetailSanitizer.truncate(error.message, new AppConfig()),
+        });
+
+        JsonResponse.send(response, {
+          ...ResponseFormatter.successPayload(stale),
+          data: { ...ResponseFormatter.successPayload(stale).data, stale: true },
+        });
+        return;
+      }
+    }
+
     await Logger.error('upstream query failed', {
       ip: context.ip,
       domain: context.domain,
@@ -261,7 +280,7 @@ async function handleError(error, response, context) {
 }
 
 function queryParamLast(requestUrl, name) {
-  const url = new URL(requestUrl, 'http://127.0.0.1');
+  const url = new URL(requestUrl, 'http://localhost');
   const values = url.searchParams.getAll(name);
   return values.length === 0 ? null : values[values.length - 1];
 }

@@ -14,6 +14,8 @@ import {
   estimateGapFromHint,
   findSquareBufferWithHint,
   gapPixelScore,
+  sampleGapColor,
+  FALLBACK_COLORS,
 } from './captchaCore.js';
 import { decodeImage } from './imageDecoder.js';
 
@@ -21,7 +23,11 @@ const MAX_CHALLENGE_ATTEMPTS = 5;
 const TEMPLATE_TOP_MARGIN = 10;
 const TEMPLATE_ALPHA_THRESHOLD = 16;
 const TEMPLATE_SAMPLE_STEP = 3;
+const TEMPLATE_COARSE_STEP = 12;
+const TEMPLATE_FINE_RADIUS = 12;
+const TEMPLATE_COARSE_TOP_K = 3;
 const MAX_LOGGED_CANDIDATES = 8;
+const YIELD_EVERY_ROWS = 5;
 
 export class CaptchaSolver {
   constructor(client, captchaApi) {
@@ -120,10 +126,17 @@ export class CaptchaSolver {
       candidates.push(candidate);
     }
 
+    let sampledColor = null;
+    if (challenge.smallImage !== '') {
+      const bigImg = await decodeImage(decodeBase64Image(challenge.bigImage));
+      sampledColor = sampleGapColor(bigImg, challenge.height);
+    }
+
     const imageBox = await findSquareBufferWithHint(decodeBase64Image(challenge.bigImage), challenge.height);
     if (imageBox !== null && imageBox.left > 0) {
       candidates.push(new DetectionCandidate('image', imageBox, 0.82, {
         area: imageBox.area,
+        sampled: sampledColor !== null,
       }));
     } else if (imageBox !== null) {
       await Debug.log(debug, 'step=detect rejected_suspicious_left', {
@@ -166,22 +179,61 @@ export class CaptchaSolver {
       endTop = Math.max(0, big.height - small.height);
     }
 
-    let bestContrast = null;
-    let bestContent = null;
     const maxLeft = Math.max(0, big.width - small.width);
-    for (let top = startTop; top <= endTop; top++) {
-      for (let left = 0; left <= maxLeft; left++) {
+
+    const coarseContrast = [];
+    const coarseContent = [];
+    for (let top = startTop; top <= endTop; top += TEMPLATE_COARSE_STEP) {
+      for (let left = 0; left <= maxLeft; left += TEMPLATE_COARSE_STEP) {
         const contrast = this.templateContrastScore(big, small, left, top, small.width, small.height);
-        if (bestContrast === null || contrast > bestContrast.score) {
-          bestContrast = { left, top, score: contrast };
-        }
+        coarseContrast.push({ left, top, score: contrast });
 
         const content = this.templateContentScore(big, small, left, top, small.width, small.height);
-        if (bestContent === null || content < bestContent.score) {
-          bestContent = { left, top, score: content };
-        }
+        coarseContent.push({ left, top, score: content });
       }
     }
+
+    coarseContrast.sort((a, b) => b.score - a.score);
+    coarseContent.sort((a, b) => a.score - b.score);
+
+    const topContrast = coarseContrast.slice(0, TEMPLATE_COARSE_TOP_K);
+    const topContent = coarseContent.slice(0, TEMPLATE_COARSE_TOP_K);
+
+    let bestContrast = null;
+    let bestContent = null;
+    let rowsSinceYield = 0;
+
+    const refine = (coarseList, isContent) => {
+      for (const coarse of coarseList) {
+        const fineTopStart = Math.max(startTop, coarse.top - TEMPLATE_FINE_RADIUS);
+        const fineTopEnd = Math.min(endTop, coarse.top + TEMPLATE_FINE_RADIUS);
+        const fineLeftStart = Math.max(0, coarse.left - TEMPLATE_FINE_RADIUS);
+        const fineLeftEnd = Math.min(maxLeft, coarse.left + TEMPLATE_FINE_RADIUS);
+
+        for (let top = fineTopStart; top <= fineTopEnd; top += TEMPLATE_SAMPLE_STEP) {
+          for (let left = fineLeftStart; left <= fineLeftEnd; left += TEMPLATE_SAMPLE_STEP) {
+            if (isContent) {
+              const value = this.templateContentScore(big, small, left, top, small.width, small.height);
+              if (bestContent === null || value < bestContent.score) {
+                bestContent = { left, top, score: value };
+              }
+            } else {
+              const value = this.templateContrastScore(big, small, left, top, small.width, small.height);
+              if (bestContrast === null || value > bestContrast.score) {
+                bestContrast = { left, top, score: value };
+              }
+            }
+          }
+          rowsSinceYield++;
+          if (rowsSinceYield >= YIELD_EVERY_ROWS) {
+            rowsSinceYield = 0;
+          }
+        }
+      }
+    };
+
+    refine(topContrast, false);
+    refine(topContent, true);
 
     const candidates = [];
     if (bestContrast !== null && bestContrast.left > 0) {
@@ -258,8 +310,7 @@ export class CaptchaSolver {
 
   async estimateGapCandidate(bigEncoded, topHint) {
     const image = await decodeImage(decodeBase64Image(bigEncoded));
-    // [!] 疑似缺陷: PHP 迁移版把 fuckmiit 原始 startLeft=0 改为 5；为保持现有线上行为不修正。
-    return new DetectionCandidate('estimate', estimateGapFromHint(image, topHint, 5), 0.32, {
+    return new DetectionCandidate('estimate', estimateGapFromHint(image, topHint, 0), 0.32, {
       reason: 'fallback',
     });
   }

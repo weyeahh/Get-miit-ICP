@@ -17,33 +17,14 @@ export class FileCache {
     await this.gc();
     await AppPaths.ensureDir(this.directory, true);
     const file = this.fileForKey(key);
-    let raw;
-    try {
-      raw = await readFile(file, 'utf8');
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        return null;
-      }
-      throw new StorageException('failed to open cache file', 'service storage is not ready', { cause: error });
-    }
+    const payload = await this.readPayload(file, true);
+    return payload?.value !== null && typeof payload?.value === 'object' && !Array.isArray(payload.value) ? payload.value : null;
+  }
 
-    if (raw === '') {
-      return null;
-    }
-
-    let payload;
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-
-    const expiresAt = Number.parseInt(payload?.expires_at ?? 0, 10) || 0;
-    if (expiresAt > 0 && expiresAt < epochSeconds()) {
-      await rm(file, { force: true }).catch(() => {});
-      return null;
-    }
-
+  async getStale(key) {
+    await AppPaths.ensureDir(this.directory, true);
+    const file = this.fileForKey(key);
+    const payload = await this.readPayload(file, false);
     return payload?.value !== null && typeof payload?.value === 'object' && !Array.isArray(payload.value) ? payload.value : null;
   }
 
@@ -81,6 +62,37 @@ export class FileCache {
     } catch (error) {
       throw new StorageException('failed to lock cache file', 'service storage is not ready', { cause: error });
     }
+  }
+
+  async readPayload(file, enforceTTL) {
+    let raw;
+    try {
+      raw = await readFile(file, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return null;
+      }
+      throw new StorageException('failed to open cache file', 'service storage is not ready', { cause: error });
+    }
+
+    if (raw === '') {
+      return null;
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+
+    const expiresAt = Number.parseInt(payload?.expires_at ?? 0, 10) || 0;
+    if (enforceTTL && expiresAt > 0 && expiresAt < epochSeconds()) {
+      await rm(file, { force: true }).catch(() => {});
+      return null;
+    }
+
+    return payload;
   }
 
   async gc() {

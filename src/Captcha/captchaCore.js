@@ -10,15 +10,66 @@ export const TOP_HINT_ALLOWANCE = 8;
 export const GAP_APPROX_SIZE = 72;
 export const TARGET_COLOR = { r: 199, g: 186, b: 183 };
 
+export const FALLBACK_COLORS = [
+  { r: 199, g: 186, b: 183 },
+  { r: 210, g: 195, b: 192 },
+  { r: 180, g: 170, b: 168 },
+  { r: 192, g: 180, b: 176 },
+];
+
+export function sampleGapColor(image, topHint) {
+  const top = clamp(topHint, 0, Math.max(0, image.height - GAP_APPROX_SIZE));
+  const samples = [];
+  for (let y = top; y < Math.min(image.height, top + 32); y++) {
+    for (let x = 0; x < image.width; x++) {
+      const { r, g, b } = image.rgbAt(x, y);
+      const avg = (r + g + b) / 3;
+      const spread = Math.max(r, g, b) - Math.min(r, g, b);
+      if (avg >= 120 && avg <= 230 && spread <= 30) {
+        samples.push({ r, g, b, count: 1 });
+      }
+    }
+  }
+
+  if (samples.length === 0) {
+    return null;
+  }
+
+  const median = (arr, prop) => {
+    const sorted = [...arr].map(v => v[prop]).sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+
+  const r = median(samples, 'r');
+  const g = median(samples, 'g');
+  const b = median(samples, 'b');
+  return { r, g, b };
+}
+
+export async function detectSquareColorAdaptive(image, topHint, sampledColor = null) {
+  const targets = sampledColor !== null
+    ? [sampledColor, ...FALLBACK_COLORS]
+    : FALLBACK_COLORS;
+
+  for (const target of targets) {
+    for (const tolerance of [COLOR_TOLERANCE, RELAXED_COLOR_TOLERANCE]) {
+      const box = findCaptchaSquare(image, target, tolerance, topHint);
+      if (box !== null) {
+        return box;
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function detectSquareBase64WithHint(encoded, topHint) {
   const imageData = decodeBase64Image(encoded);
   const image = await decodeImage(imageData);
 
-  for (const tolerance of [COLOR_TOLERANCE, RELAXED_COLOR_TOLERANCE]) {
-    const box = findCaptchaSquare(image, TARGET_COLOR, tolerance, topHint);
-    if (box !== null) {
-      return box;
-    }
+  const box = await detectSquareColorAdaptive(image, topHint, null);
+  if (box !== null) {
+    return box;
   }
 
   if (topHint >= 0) {
@@ -34,14 +85,7 @@ export async function findSquareBase64WithHint(encoded, topHint) {
 
 export async function findSquareBufferWithHint(binary, topHint) {
   const image = await decodeImage(binary);
-  for (const tolerance of [COLOR_TOLERANCE, RELAXED_COLOR_TOLERANCE]) {
-    const box = findCaptchaSquare(image, TARGET_COLOR, tolerance, topHint);
-    if (box !== null) {
-      return box;
-    }
-  }
-
-  return null;
+  return detectSquareColorAdaptive(image, topHint, null);
 }
 
 export function decodeBase64Image(encoded) {
