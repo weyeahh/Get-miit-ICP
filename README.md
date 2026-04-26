@@ -100,6 +100,7 @@
 |  |- logs/
 |  `- ratelimit/
 |- tests/
+|  |- AppConfigTest.php
 |  |- bootstrap.php
 |  |- CaptchaSolverTest.php
 |  |- DomainNormalizerTest.php
@@ -107,6 +108,7 @@
 |  |- JsonResponseTest.php
 |  |- MiitQueryServiceTest.php
 |  |- QueryCacheVersionTest.php
+|  |- RecordNotFoundExceptionTest.php
 |  |- ResponseFormatterTest.php
 |  `- run.php
 |- composer.json
@@ -230,6 +232,7 @@ http://127.0.0.1:8080/?domain=baidu.com
 ```php
 'debug' => [
     'enabled' => true,
+    'store_captcha_samples' => true,
 ],
 ```
 
@@ -314,6 +317,10 @@ return [
     'debug' => [
         // 是否启用调试输出。启用后服务会把流程日志写到 storage/logs 和 stderr。
         'enabled' => false,
+
+        // 是否在 debug 模式下把验证码 challenge 样本落盘到 storage/debug/captcha/。
+        // 开启后会额外保存 big.png、small.png 和 metadata.json，便于离线排查识别偏差。
+        'store_captcha_samples' => false,
     ],
 
     'log' => [
@@ -361,7 +368,10 @@ return [
 12. `debug.enabled`
     控制是否启用流程调试日志。启用后服务会将关键步骤日志写入 `storage/logs/`，并同步尝试输出到 stderr。生产环境通常建议保持 `false`，排查完成后应关闭。
 
-13. `log.max_detail_length`
+13. `debug.store_captcha_samples`
+    控制在 `debug.enabled=true` 时是否额外保存验证码 challenge 样本。启用后服务会把当前 challenge 的 `big.png`、`small.png` 和 `metadata.json` 写入 `storage/debug/captcha/`，用于离线比对模板匹配、图像检测和最终候选排序。默认 `false`，因为它会产生额外磁盘写入并保留调试样本。
+
+14. `log.max_detail_length`
     控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
 
 边界行为说明：
@@ -382,6 +392,7 @@ return [
 MIIT_CACHE_SUCCESS_TTL=43200
 MIIT_RATE_LIMIT_GLOBAL_QPS=5
 MIIT_DEBUG_ENABLED=true
+MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=true
 ```
 
 这些环境变量会分别覆盖：
@@ -389,6 +400,7 @@ MIIT_DEBUG_ENABLED=true
 1. `cache.success_ttl`
 2. `ratelimit.global_qps`
 3. `debug.enabled`
+4. `debug.store_captcha_samples`
 
 推荐调整策略：
 
@@ -610,6 +622,9 @@ HTTP status: `200`
 
 4. `storage/logs/`
    保存结构化错误日志和 debug 诊断日志。
+
+5. `storage/debug/captcha/`
+   当同时开启 `debug.enabled=true` 和 `debug.store_captcha_samples=true` 时，保存验证码 challenge 的调试样本，包括 `big.png`、`small.png` 和 `metadata.json`。
 
 这些文件都是本地文件实现，适合单机部署。如果你在多实例环境中运行，建议后续替换为 Redis 等共享存储。
 
