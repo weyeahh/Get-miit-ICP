@@ -66,14 +66,16 @@ final class CaptchaSolver
                 return $result;
             }
 
-            $failures[] = $result['failure'];
+            foreach ($result['failures'] as $failure) {
+                $failures[] = $failure;
+            }
         }
 
         throw new UpstreamException('checkImage failed after fresh challenge attempts=' . $this->formatFailures($failures), 'upstream query failed');
     }
 
     /**
-     * @return array{rect: Rect, response: array<string, mixed>}|array{failure: array<string, mixed>}
+     * @return array{rect: Rect, response: array<string, mixed>}|array{failures: list<array<string, mixed>>}
      */
     private function trySolveChallenge(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, int $challengeAttempt, bool $debug): array
     {
@@ -83,9 +85,6 @@ final class CaptchaSolver
         if ($offsets === []) {
             throw new UpstreamException('captcha candidate offsets are empty', 'upstream query failed');
         }
-
-        $offsetIndex = min($challengeAttempt - 1, count($offsets) - 1);
-        $left = $offsets[$offsetIndex];
 
         Debug::log($debug, sprintf(
             'step=detect method=%s left=%d top=%d right=%d bottom=%d',
@@ -97,37 +96,43 @@ final class CaptchaSolver
         ), [
             'challenge_attempt' => $challengeAttempt,
             'candidate_offsets' => array_slice($offsets, 0, 12),
-            'selected_offset_index' => $offsetIndex,
-            'selected_left' => $left,
             'candidates' => $this->detectionSummaries($detections),
         ]);
 
-        Debug::log($debug, 'step=checkImage attempt_left=' . $left, [
-            'challenge_attempt' => $challengeAttempt,
-        ]);
-
-        $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
-        if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
-            $box->right += $left - $box->left;
-            $box->left = $left;
-            Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')), [
+        $failures = [];
+        foreach ($offsets as $offsetIndex => $left) {
+            Debug::log($debug, 'step=checkImage attempt_left=' . $left, [
                 'challenge_attempt' => $challengeAttempt,
+                'selected_offset_index' => $offsetIndex,
             ]);
 
-            return ['rect' => $box, 'response' => $response];
+            $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
+            if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
+                $box->right += $left - $box->left;
+                $box->left = $left;
+                Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')), [
+                    'challenge_attempt' => $challengeAttempt,
+                    'selected_offset_index' => $offsetIndex,
+                    'selected_left' => $left,
+                ]);
+
+                return ['rect' => $box, 'response' => $response];
+            }
+
+            $failure = [
+                'challenge_attempt' => $challengeAttempt,
+                'attempt_left' => $left,
+                'selected_offset_index' => $offsetIndex,
+                'code' => $response['code'] ?? null,
+                'success' => $response['success'] ?? null,
+                'msg' => $response['msg'] ?? null,
+            ];
+
+            Debug::log($debug, 'step=checkImage rejected', $failure);
+            $failures[] = $failure;
         }
 
-        $failure = [
-            'challenge_attempt' => $challengeAttempt,
-            'attempt_left' => $left,
-            'code' => $response['code'] ?? null,
-            'success' => $response['success'] ?? null,
-            'msg' => $response['msg'] ?? null,
-        ];
-
-        Debug::log($debug, 'step=checkImage rejected', $failure);
-
-        return ['failure' => $failure];
+        return ['failures' => $failures];
     }
 
     /**
