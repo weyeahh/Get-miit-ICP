@@ -132,7 +132,7 @@
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-12. `CaptchaSolver` 会优先复用原始 `fuckmiit` 的工作路径：只基于 `bigImage` 在本地检测灰色缺口块，并围绕检测出的 `left` 在同一个 challenge 上按 `center, center-1, center+1...` 的顺序做有限半径试探；只有当前 challenge 的候选全部失败时，才会重新获取新的 challenge 并再次完整识别
+12. `CaptchaSolver` 会优先基于 `bigImage` 的灰色缺口检测生成候选，并辅以模板对比和近似兜底生成备选坐标；每个 challenge 只提交一个当前最优候选，如果校验失败则立即重新获取新的 challenge，再切换到下一类候选假设继续识别，避免同一个 `captchaUUID` 在首次失败后继续提交而被上游直接判定为过期
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
@@ -174,7 +174,7 @@
     封装验证码获取与校验接口，并把验证码协议失败统一归类为上游错误。
 
 11. `src/Captcha/CaptchaSolver.php`
-    验证码识别核心模块，负责按单个 challenge 组织灰色缺口检测、同 challenge 偏移试探、近似兜底和 challenge 失败后的重新获取，并返回实际成功的 `captchaUuid` 供后续请求头写回。
+    验证码识别核心模块，负责按单个 challenge 组织灰色缺口检测、模板候选生成、近似兜底、候选排序和 challenge 失败后的重新获取，并返回实际成功的 `captchaUuid` 供后续请求头写回。
 
 12. `src/Api/IcpApi.php`
     封装备案列表和详情查询接口。
@@ -572,8 +572,8 @@ HTTP status: `200`
 15. 成功结果默认缓存 24 小时。
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-18. 验证码求解重新对齐到原始 `fuckmiit` 的工作路径，以 `bigImage` 中的灰色缺口块检测为主，并优先复用其颜色容差、连通域和近似方块判定逻辑，减少与原始可工作实现的语义偏离。
-19. `CaptchaSolver` 会在同一个 challenge / 同一个 `captchaUUID` 上围绕检测出的 `left` 做有限半径偏移试探，而不是把一次失败立即转换成跨 challenge 的重新猜测；只有当前 challenge 的候选全部失败时才会获取新的 challenge。
+18. 验证码求解会优先复用灰色缺口检测这条低成本主路径，并在检测结果明显异常时回退到模板对比与近似估算生成的新候选，减少 `left=0` 一类异常检测值长期主导整条链路的问题。
+19. 由于当前上游在同一个 `captchaUUID` 首次校验失败后通常会直接把后续提交判定为过期，`CaptchaSolver` 现在改为每个 challenge 只提交一个候选；一旦失败，立即获取新的 challenge，并轮换到下一类候选假设继续尝试。
 20. 验证码求解成功后，业务层会写回实际成功 challenge 对应的 `Uuid` 和 `Sign`，避免内部重试获取新 challenge 后 header 仍沿用第一次 uuid 的状态错配问题。
 21. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
 22. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
@@ -597,7 +597,7 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 验证码候选横坐标会优先来自 `bigImage` 中灰色缺口块的本地检测，并围绕检测中心按 `center, center-1, center+1...` 的顺序做有限半径试探；如果当前 challenge 的候选全部失败，再重新获取新的验证码并重复同样流程。`estimate` 只作为图像检测失败时的近似兜底。
+5. 验证码候选横坐标会优先来自 `bigImage` 中灰色缺口块的本地检测，并辅以模板对比和 `estimate` 近似兜底生成备选坐标；每个 challenge 只提交一个当前最优候选，如果失败则重新获取新的验证码并切换到下一类候选继续尝试，以规避上游对同一 challenge 二次提交直接判定过期的行为。
 6. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
 7. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
 8. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
@@ -672,7 +672,7 @@ HTTP status: `200`
 
 `queryByCondition` 相关 debug 日志会记录列表数量、候选项 key、原始标识符值和归一化后的标识符，用于排查上游字段变更、列表项缺少 `mainId` / `domainId` / `serviceId`、详情接口不可用等问题。
 
-验证码相关 debug 日志会记录检测出的缺口坐标、当前 challenge 的候选 offset 列表、当前验证码尝试序号，以及每次 `checkImage` 拒绝时的上游返回码和消息，用于排查灰色缺口检测失效、中心坐标偏移过大、当前 challenge 内局部试探不足和验证码窗口过期等问题。
+验证码相关 debug 日志会记录本轮选中的检测方法、候选坐标、候选排序、当前验证码尝试序号，以及每次 `checkImage` 拒绝时的上游返回码和消息，用于排查灰色缺口检测失效、模板候选偏差、`left=0` 异常值主导和验证码窗口过期等问题。
 
 如果同时开启 `debug.enabled=true` 和 `debug.store_captcha_samples=true`，服务会把当前 challenge 的 `big.png`、`small.png` 和 `metadata.json` 落盘到 `storage/debug/captcha/`，用于离线比对真实 challenge。
 

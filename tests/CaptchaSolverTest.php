@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Miit\Tests;
 
 use Miit\Captcha\CaptchaSolver;
+use Miit\Captcha\DetectionCandidate;
+use Miit\Captcha\Rect;
 use ReflectionClass;
 use ReflectionMethod;
 
@@ -14,6 +16,7 @@ final class CaptchaSolverTest
     {
         self::candidateOffsetsExpandAroundCenterLikeGoImplementation();
         self::candidateOffsetsDeduplicateAndKeepNonNegativeValues();
+        self::rankCandidatesPrefersTemplateCandidatesOverFallbacks();
     }
 
     private static function candidateOffsetsExpandAroundCenterLikeGoImplementation(): void
@@ -35,6 +38,21 @@ final class CaptchaSolverTest
 
         if ($offsets !== $expected) {
             throw new \RuntimeException('captcha offsets should keep non-negative unique values only');
+        }
+    }
+
+    private static function rankCandidatesPrefersTemplateCandidatesOverFallbacks(): void
+    {
+        $solver = self::solverWithoutConstructor();
+        $candidates = self::invoke($solver, 'rankCandidates', [[
+            new DetectionCandidate('estimate', new Rect(428, 10, 499, 81, 5184), 0.32),
+            new DetectionCandidate('image', new Rect(0, 28, 71, 99, 5184), 0.82),
+            new DetectionCandidate('template-content', new Rect(172, 28, 243, 99, 5184), 0.74),
+            new DetectionCandidate('template-contrast', new Rect(180, 28, 251, 99, 5184), 0.78),
+        ]]);
+
+        if (!$candidates[0] instanceof DetectionCandidate || $candidates[0]->method !== 'template-contrast') {
+            throw new \RuntimeException('captcha candidate ranking should prefer template candidates over image and estimate fallbacks');
         }
     }
 
