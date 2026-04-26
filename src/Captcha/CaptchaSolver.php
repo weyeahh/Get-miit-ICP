@@ -16,10 +16,12 @@ final class CaptchaSolver
     private const COLOR_TOLERANCE = 12;
     private const RELAXED_COLOR_TOLERANCE = 24;
     private const MAX_OFFSET_RADIUS = 8;
-    private const MIN_VALID_LEFT = 20;
+    private const MIN_VALID_LEFT = 30;
+    private const MAX_CHALLENGE_ATTEMPTS = 5;
     private const TEMPLATE_TOP_MARGIN = 8;
-    private const TEMPLATE_SEARCH_RADIUS = 36;
+    private const TEMPLATE_SEARCH_RADIUS = 48;
     private const TEMPLATE_MAX_AVERAGE_SCORE = 90;
+    private const TEMPLATE_SAMPLE_STEP = 3;
     private const TEMPLATE_ALPHA_THRESHOLD = 16;
     private const MIN_COMPONENT_AREA = 900;
     private const MIN_SIDE_LENGTH = 24;
@@ -38,22 +40,116 @@ final class CaptchaSolver
     /** @return array{rect: Rect, response: array<string, mixed>} */
     public function solve(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, bool $debug): array
     {
-        $detected = $this->detectSquareBase64WithHint($bigImage, $topHint);
-        if ($this->isSuspiciousLeft($detected->left)) {
+        $challenge = [
+            'uuid' => $captchaUuid,
+            'bigImage' => $bigImage,
+            'smallImage' => $smallImage,
+            'height' => $topHint,
+        ];
+        $failures = [];
+
+        for ($attempt = 1; $attempt <= self::MAX_CHALLENGE_ATTEMPTS; $attempt++) {
+            if ($attempt > 1) {
+                $challenge = $this->requestChallenge($debug, $attempt);
+            }
+
+            $result = $this->trySolveChallenge(
+                $challenge['uuid'],
+                $challenge['bigImage'],
+                $challenge['smallImage'],
+                $challenge['height'],
+                $attempt,
+                $debug
+            );
+
+            if (isset($result['response'])) {
+                return $result;
+            }
+
+            $failures[] = $result['failure'];
+        }
+
+        throw new UpstreamException('checkImage failed after fresh challenge attempts=' . $this->formatFailures($failures), 'upstream query failed');
+    }
+
+    /**
+     * @return array{rect: Rect, response: array<string, mixed>}|array{failure: array<string, mixed>}
+     */
+    private function trySolveChallenge(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, int $challengeAttempt, bool $debug): array
+    {
+        $detections = $this->detectCandidates($bigImage, $smallImage, $topHint, $debug);
+        $box = $detections[0]['rect'];
+        $offsets = $this->candidateOffsetsForDetections($detections, self::MAX_OFFSET_RADIUS);
+        if ($offsets === []) {
+            throw new UpstreamException('captcha candidate offsets are empty', 'upstream query failed');
+        }
+
+        $offsetIndex = min($challengeAttempt - 1, count($offsets) - 1);
+        $left = $offsets[$offsetIndex];
+
+        Debug::log($debug, sprintf(
+            'step=detect method=%s left=%d top=%d right=%d bottom=%d',
+            $detections[0]['method'],
+            $box->left,
+            $box->top,
+            $box->right,
+            $box->bottom
+        ), [
+            'challenge_attempt' => $challengeAttempt,
+            'candidate_offsets' => array_slice($offsets, 0, 12),
+            'selected_offset_index' => $offsetIndex,
+            'selected_left' => $left,
+            'candidates' => $this->detectionSummaries($detections),
+        ]);
+
+        Debug::log($debug, 'step=checkImage attempt_left=' . $left, [
+            'challenge_attempt' => $challengeAttempt,
+        ]);
+
+        $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
+        if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
+            $box->right += $left - $box->left;
+            $box->left = $left;
+            Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')), [
+                'challenge_attempt' => $challengeAttempt,
+            ]);
+
+            return ['rect' => $box, 'response' => $response];
+        }
+
+        $failure = [
+            'challenge_attempt' => $challengeAttempt,
+            'attempt_left' => $left,
+            'code' => $response['code'] ?? null,
+            'success' => $response['success'] ?? null,
+            'msg' => $response['msg'] ?? null,
+        ];
+
+        Debug::log($debug, 'step=checkImage rejected', $failure);
+
+        return ['failure' => $failure];
+    }
+
+    /**
+     * @return list<array{method: string, rect: Rect}>
+     */
+    private function detectCandidates(string $bigImage, string $smallImage, int $topHint, bool $debug): array
+    {
+        $detections = [
+            ['method' => 'image', 'rect' => $this->detectSquareBase64WithHint($bigImage, $topHint)],
+        ];
+
+        if ($this->isSuspiciousLeft($detections[0]['rect']->left)) {
             Debug::log($debug, 'step=detect rejected_suspicious_left', [
                 'method' => 'image',
-                'left' => $detected->left,
+                'left' => $detections[0]['rect']->left,
                 'min_valid_left' => self::MIN_VALID_LEFT,
             ]);
 
-            $detected = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
+            $detections[0] = ['method' => 'estimate', 'rect' => $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint)];
         }
 
-        $detections = [
-            ['method' => 'image', 'rect' => $detected],
-        ];
-
-        $template = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint, $detected->left);
+        $template = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint);
         if ($template !== null) {
             if ($this->isSuspiciousLeft($template->left)) {
                 Debug::log($debug, 'step=detect rejected_suspicious_left', [
@@ -66,47 +162,43 @@ final class CaptchaSolver
             }
         }
 
-        $box = $detections[0]['rect'];
-
-        Debug::log($debug, sprintf(
-            'step=detect method=%s left=%d top=%d right=%d bottom=%d',
-            $detections[0]['method'],
-            $box->left,
-            $box->top,
-            $box->right,
-            $box->bottom
-        ), [
-            'candidates' => $this->detectionSummaries($detections),
-        ]);
-
-        $attempted = [];
-        foreach ($this->candidateOffsetsForDetections($detections, self::MAX_OFFSET_RADIUS) as $left) {
-            $attempted[] = $left;
-            Debug::log($debug, 'step=checkImage attempt_left=' . $left);
-            $response = $this->captchaApi->tryCheckImage($captchaUuid, $left);
-            if (($response['code'] ?? 0) === 200 && ($response['success'] ?? false) === true) {
-                $box->right += $left - $box->left;
-                $box->left = $left;
-                Debug::log($debug, 'step=checkImage success=true sign_len=' . strlen((string) ($response['params'] ?? '')));
-
-                return ['rect' => $box, 'response' => $response];
-            }
-
-            Debug::log($debug, 'step=checkImage rejected', [
-                'attempt_left' => $left,
-                'code' => $response['code'] ?? null,
-                'success' => $response['success'] ?? null,
-                'msg' => $response['msg'] ?? null,
-            ]);
-        }
-
-        throw new UpstreamException('checkImage failed around detected left=' . $box->left . ' attempts=' . implode(',', $attempted), 'upstream query failed');
+        return $detections;
     }
 
     private function detectSquareBase64WithHint(string $encoded, int $topHint): Rect
     {
         $imageData = $this->decodeBase64Image($encoded);
         return $this->detectSquareFromBinaryWithHint($imageData, $topHint);
+    }
+
+    /** @return array{uuid: string, bigImage: string, smallImage: string, height: int} */
+    private function requestChallenge(bool $debug, int $challengeAttempt): array
+    {
+        $clientUid = CaptchaApi::newClientUid();
+        Debug::log($debug, 'step=getCheckImagePoint retry clientUid=' . $clientUid, [
+            'challenge_attempt' => $challengeAttempt,
+        ]);
+
+        $challenge = $this->captchaApi->getCheckImagePoint($clientUid);
+        $params = is_array($challenge['params'] ?? null) ? $challenge['params'] : [];
+        $captchaUuid = (string) ($params['uuid'] ?? '');
+        $bigImage = (string) ($params['bigImage'] ?? '');
+        $smallImage = (string) ($params['smallImage'] ?? '');
+        $height = (int) ($params['height'] ?? -1);
+        if ($captchaUuid === '' || $bigImage === '' || $height < 0) {
+            throw new UpstreamException('captcha retry challenge params missing', 'upstream query failed');
+        }
+
+        Debug::log($debug, 'step=getCheckImagePoint retry success=true captchaUUID=' . $captchaUuid . ' height=' . $height, [
+            'challenge_attempt' => $challengeAttempt,
+        ]);
+
+        return [
+            'uuid' => $captchaUuid,
+            'bigImage' => $bigImage,
+            'smallImage' => $smallImage,
+            'height' => $height,
+        ];
     }
 
     private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint, ?int $centerLeft = null): ?Rect
@@ -424,8 +516,8 @@ final class CaptchaSolver
         $score = 0;
         $samples = 0;
 
-        for ($y = 0; $y < $height; $y++) {
-            for ($x = 0; $x < $width; $x++) {
+        for ($y = 0; $y < $height; $y += self::TEMPLATE_SAMPLE_STEP) {
+            for ($x = 0; $x < $width; $x += self::TEMPLATE_SAMPLE_STEP) {
                 $smallColor = imagecolorat($small, $x, $y);
                 $alpha = ($smallColor >> 24) & 0x7F;
                 if ($alpha > self::TEMPLATE_ALPHA_THRESHOLD) {
@@ -451,6 +543,22 @@ final class CaptchaSolver
         }
 
         return intdiv($score, $samples);
+    }
+
+    /** @param list<array<string, mixed>> $failures */
+    private function formatFailures(array $failures): string
+    {
+        $parts = [];
+        foreach ($failures as $failure) {
+            $parts[] = sprintf(
+                '#%s:left=%s,msg=%s',
+                (string) ($failure['challenge_attempt'] ?? ''),
+                (string) ($failure['attempt_left'] ?? ''),
+                (string) ($failure['msg'] ?? '')
+            );
+        }
+
+        return implode(';', $parts);
     }
 
     private function clamp(int $value, int $low, int $high): int

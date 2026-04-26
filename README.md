@@ -127,7 +127,7 @@
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-12. `CaptchaSolver` 先用大图启发式识别缺口，再使用 `smallImage` 对候选区域做局部模板校准，并调用 `/image/checkImage`
+12. `CaptchaSolver` 先用大图启发式识别缺口，再使用 `smallImage` 做粗采样模板校准，并调用 `/image/checkImage`；同一验证码只提交一次，失败后重新获取验证码再重试
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
@@ -169,7 +169,7 @@
     封装验证码获取与校验接口，并把验证码协议失败统一归类为上游错误。
 
 11. `src/Captcha/CaptchaSolver.php`
-    验证码识别核心模块，负责读取图片、识别缺口、过滤极左误检、枚举候选横坐标、调用校验接口。
+    验证码识别核心模块，负责读取图片、识别缺口、过滤极左误检、枚举候选横坐标、调用校验接口，并在校验失败时用新验证码重试。
 
 12. `src/Api/IcpApi.php`
     封装备案列表和详情查询接口。
@@ -556,20 +556,21 @@ HTTP status: `200`
 15. 成功结果默认缓存 24 小时。
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-18. 验证码求解先走大图启发式识别，再用 `smallImage` 在候选区域附近做局部模板校准，避免全图模板扫描导致验证码窗口过期；同时会过滤明显无效的极左候选值，减少 `left=5` 这类退化结果。
-19. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
-20. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
-21. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
-22. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
-23. 验证码识别失败、图片解码失败、`checkImage` 偏移尝试耗尽等路径也统一归类为 `UpstreamException`，不再错误落入内部错误分支。
-24. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积；在 PHP 8+ 中不再显式调用已弃用的 `curl_close()`。
-25. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
-26. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
-27. `Debug` 会把流程诊断写入结构化日志，并同步尝试写入 stderr；HTTP 响应仍保持错误脱敏，不会因为开启 debug 而暴露内部异常。
-28. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
-29. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
-30. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
-31. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
+18. 验证码求解先走大图启发式识别，再用 `smallImage` 做粗采样模板校准，避免全像素模板扫描导致验证码窗口过期；同时会过滤明显无效的极左候选值，减少 `left=5`、`left=20` 这类退化结果。
+19. `CaptchaSolver` 不再对同一个验证码 uuid 连续提交多个 `checkImage` 坐标；当前上游在首次错误后会把图片状态置为过期，因此失败后会重新获取验证码、重新识别、再提交一次。
+20. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
+21. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
+22. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
+23. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
+24. 验证码识别失败、图片解码失败、`checkImage` 偏移尝试耗尽等路径也统一归类为 `UpstreamException`，不再错误落入内部错误分支。
+25. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积；在 PHP 8+ 中不再显式调用已弃用的 `curl_close()`。
+26. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
+27. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
+28. `Debug` 会把流程诊断写入结构化日志，并同步尝试写入 stderr；HTTP 响应仍保持错误脱敏，不会因为开启 debug 而暴露内部异常。
+29. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
+30. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
+31. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+32. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
 
 ## Implementation Notes
 
@@ -579,7 +580,7 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 验证码候选横坐标会丢弃极左异常值，并围绕识别中心做有限半径试探，避免单个误检值直接导致验证码失败。
+5. 验证码候选横坐标会丢弃极左异常值，并围绕识别中心做有限半径试探；同一个验证码只提交一个坐标，失败后重新获取验证码，避免上游把同一 uuid 的后续尝试全部判定为过期。
 6. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
 7. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
 8. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
@@ -639,18 +640,19 @@ HTTP status: `200`
 3. `step=detect method=...`
 4. `step=checkImage attempt_left=...`
 5. `step=checkImage rejected`
-6. `step=query`
-7. `step=queryByCondition success=true`
-8. `step=queryByCondition selected_match`
-9. `step=queryByCondition exact_matches_without_valid_identifiers`
-10. `step=queryByCondition missing_valid_identifiers`
-11. `step=queryDetail`
-12. `step=queryByCondition fallback=list_item_detail`
-13. `step=queryDetail fallback=list_item_detail`
+6. `step=getCheckImagePoint retry`
+7. `step=query`
+8. `step=queryByCondition success=true`
+9. `step=queryByCondition selected_match`
+10. `step=queryByCondition exact_matches_without_valid_identifiers`
+11. `step=queryByCondition missing_valid_identifiers`
+12. `step=queryDetail`
+13. `step=queryByCondition fallback=list_item_detail`
+14. `step=queryDetail fallback=list_item_detail`
 
 `queryByCondition` 相关 debug 日志会记录列表数量、候选项 key、原始标识符值和归一化后的标识符，用于排查上游字段变更、列表项缺少 `mainId` / `domainId` / `serviceId`、详情接口不可用等问题。
 
-验证码相关 debug 日志会记录检测方法、候选坐标、每次 `checkImage` 拒绝时的上游返回码和消息，用于排查极左误检、候选偏移不足、验证码窗口过期等问题。
+验证码相关 debug 日志会记录检测方法、候选坐标、当前验证码尝试序号、每次 `checkImage` 拒绝时的上游返回码和消息，用于排查极左误检、候选偏移不足、验证码窗口过期等问题。
 
 服务端详细错误和 debug 诊断都会写入 `storage/logs/`，用于排查验证码识别失败、接口返回异常、频控触发、上游风控和列表字段结构变化问题。
 
