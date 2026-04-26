@@ -423,9 +423,6 @@ Query Parameters:
 1. `domain` required
    要查询的域名。系统会自动执行规范化与格式校验。
 
-2. `debug` optional
-   仅在配置允许时启用调试日志输出。
-
 ### Success Response
 
 HTTP status: `200`

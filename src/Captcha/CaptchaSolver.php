@@ -16,6 +16,7 @@ final class CaptchaSolver
     private const COLOR_TOLERANCE = 12;
     private const RELAXED_COLOR_TOLERANCE = 24;
     private const MAX_OFFSET_RADIUS = 4;
+    private const MIN_VALID_LEFT = 5;
     private const MIN_COMPONENT_AREA = 900;
     private const MIN_SIDE_LENGTH = 24;
     private const TOP_HINT_ALLOWANCE = 8;
@@ -34,6 +35,10 @@ final class CaptchaSolver
     public function solve(string $captchaUuid, string $bigImage, int $topHint, bool $debug): array
     {
         $box = $this->detectSquareBase64WithHint($bigImage, $topHint);
+        if ($box->left < self::MIN_VALID_LEFT) {
+            $box = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
+        }
+
         Debug::log($debug, sprintf(
             'step=detect left=%d top=%d right=%d bottom=%d',
             $box->left,
@@ -61,6 +66,17 @@ final class CaptchaSolver
     {
         $imageData = $this->decodeBase64Image($encoded);
         return $this->detectSquareFromBinaryWithHint($imageData, $topHint);
+    }
+
+    private function estimateGapFromBinaryBase64WithHint(string $encoded, int $topHint): Rect
+    {
+        $imageData = $this->decodeBase64Image($encoded);
+        $img = imagecreatefromstring($imageData);
+        if (!$img instanceof GdImage) {
+            throw new UpstreamException('decode image failed', 'upstream query failed');
+        }
+
+        return $this->estimateGapFromHint($img, $topHint);
     }
 
     private function decodeBase64Image(string $encoded): string
@@ -304,7 +320,7 @@ final class CaptchaSolver
         $seen = [];
 
         $add = static function (int $value) use (&$offsets, &$seen): void {
-            if ($value < 0 || isset($seen[$value])) {
+            if ($value < self::MIN_VALID_LEFT || isset($seen[$value])) {
                 return;
             }
 
