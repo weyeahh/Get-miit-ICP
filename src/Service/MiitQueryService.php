@@ -69,13 +69,14 @@ final class MiitQueryService
 
         $solved = $solver->solve($captchaUuid, $bigImage, $smallImage, $height, $debug);
         $checkResponse = $solved['response'];
+        $solvedUuid = (string) ($solved['solvedUuid'] ?? $captchaUuid);
         $sign = (string) ($checkResponse['params'] ?? '');
         if ($sign === '') {
             throw new UpstreamException('checkImage response missing sign', 'upstream query failed');
         }
 
         $client->setSign($sign);
-        $client->setUuid($captchaUuid);
+        $client->setUuid($solvedUuid);
 
         Debug::log($debug, 'step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=' . $domain . ' serviceType=1');
         $queryResponse = $icpApi->queryByCondition($domain);

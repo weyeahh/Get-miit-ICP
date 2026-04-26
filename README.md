@@ -58,9 +58,7 @@
 |  |  `- QueryCache.php
 |  |- Captcha/
 |  |  |- CaptchaChallenge.php
-|  |  |- CaptchaImageSet.php
 |  |  |- CaptchaSolver.php
-|  |  |- CaptchaTemplate.php
 |  |  |- DetectionCandidate.php
 |  |  `- Rect.php
 |  |- Config/
@@ -134,7 +132,7 @@
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-12. `CaptchaSolver` 会针对每一个 challenge 先解码图片、提取 `smallImage` 的 alpha 轮廓模板，再分别生成 `template-gap`、`template-contrast`、`template-content`、`image` 四类主候选，并按方法偏置与置信度排序后提交当前最佳横坐标；只有主候选全部失效时才会启用 `estimate` 兜底。由于上游首次失败后会让验证码过期，同一验证码仍然只提交一次，失败后重新获取新的 challenge 并重新完整识别
+12. `CaptchaSolver` 会优先复用原始 `fuckmiit` 的工作路径：只基于 `bigImage` 在本地检测灰色缺口块，并围绕检测出的 `left` 在同一个 challenge 上按 `center, center-1, center+1...` 的顺序做有限半径试探；只有当前 challenge 的候选全部失败时，才会重新获取新的 challenge 并再次完整识别
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
@@ -176,7 +174,7 @@
     封装验证码获取与校验接口，并把验证码协议失败统一归类为上游错误。
 
 11. `src/Captcha/CaptchaSolver.php`
-    验证码识别核心模块，负责按单个 challenge 组织图片解码、模板构建、多检测器候选生成、候选排序、提交探测和近似兜底，并在校验失败时对新 challenge 重新识别。
+    验证码识别核心模块，负责按单个 challenge 组织灰色缺口检测、同 challenge 偏移试探、近似兜底和 challenge 失败后的重新获取，并返回实际成功的 `captchaUuid` 供后续请求头写回。
 
 12. `src/Api/IcpApi.php`
     封装备案列表和详情查询接口。
@@ -574,9 +572,9 @@ HTTP status: `200`
 15. 成功结果默认缓存 24 小时。
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-18. 验证码求解不再由单一的固定灰色块检测主导，而是先根据 `smallImage` 的 alpha 区域构建模板，再并行生成 `template-gap`、`template-contrast`、`template-content` 和 `image` 四类主候选；模板主路径同时利用缺口颜色、边界对比和局部内容差异三种信号，减少某一种单独退化时整条识别链直接失效的问题。
-19. `estimate` 兜底估算不再作为常驻主候选参与排序，只在模板和图像检测全部失效时才启用；即使进入兜底，提交坐标也会显式记录基准 left 和探测偏移，减少固定默认坐标绑架整条求解链路的问题。
-20. `CaptchaSolver` 对同一个验证码 uuid 只提交一次 `checkImage`；如果失败，会重新获取验证码并对新的 challenge 重新完整识别，同时保留 challenge 级探测偏移日志，而不是机械轮换上一轮候选偏移，避免触发“校验图片信息过期”后仍在错误中心附近循环。
+18. 验证码求解重新对齐到原始 `fuckmiit` 的工作路径，以 `bigImage` 中的灰色缺口块检测为主，并优先复用其颜色容差、连通域和近似方块判定逻辑，减少与原始可工作实现的语义偏离。
+19. `CaptchaSolver` 会在同一个 challenge / 同一个 `captchaUUID` 上围绕检测出的 `left` 做有限半径偏移试探，而不是把一次失败立即转换成跨 challenge 的重新猜测；只有当前 challenge 的候选全部失败时才会获取新的 challenge。
+20. 验证码求解成功后，业务层会写回实际成功 challenge 对应的 `Uuid` 和 `Sign`，避免内部重试获取新 challenge 后 header 仍沿用第一次 uuid 的状态错配问题。
 21. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
 22. `MiitQueryService` 会兼容常见标识符字段变体，例如 `mainID`、`main_id`、`ids.mainId`；如果上游列表项已经包含完整详情字段，则可在标识符缺失或详情接口异常时使用列表项兜底。
 23. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
@@ -599,7 +597,7 @@ HTTP status: `200`
 2. 使用 Cookie 持续维持服务端会话状态。
 3. 使用 `md5("testtest" + timestamp)` 构造 `authKey`。
 4. 使用验证码大图中的缺口区域进行本地识别。
-5. 验证码候选横坐标会优先来自基于 `smallImage` alpha 轮廓构建的多检测器模板扫描，以及图像连通域检测，并按照方法偏置与置信度做显式排序；`estimate` 只作为最后兜底。单个验证码只提交一个坐标，失败后重新获取验证码并对新 challenge 重新识别，避免上游把同一 uuid 的后续尝试全部判定为过期。
+5. 验证码候选横坐标会优先来自 `bigImage` 中灰色缺口块的本地检测，并围绕检测中心按 `center, center-1, center+1...` 的顺序做有限半径试探；如果当前 challenge 的候选全部失败，再重新获取新的验证码并重复同样流程。`estimate` 只作为图像检测失败时的近似兜底。
 6. 列表查询后优先进行精确匹配，并优先选择具备有效详情标识符的候选项，而不是盲目回退第一条结果。
 7. 只有在列表接口本身成功且结果为空，或精确匹配失败时，才返回 `404`；其中精确匹配失败默认不会写入 miss cache。
 8. 如果列表候选项已经包含完整成功响应所需字段，详情标识符缺失或详情接口异常时可以回退使用该列表项。
@@ -647,7 +645,7 @@ HTTP status: `200`
 5. 当前没有 stale 数据回退策略，500 时不会回放历史成功缓存。
 6. 同域 singleflight 当前是等待后回读缓存的模式，不是长轮询队列或作业系统。
 7. 仓库附带了 `composer.json` 和基础测试骨架，但当前环境若没有 Composer CLI 仍无法执行 `composer validate --strict`。
-8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界、`404` 可缓存标志、列表候选项选择、标识符字段变体、列表详情兜底，以及验证码候选排序、去重和 distinct peak 选择规则，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。
+8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界、`404` 可缓存标志、列表候选项选择、标识符字段变体、列表详情兜底，以及验证码偏移展开顺序规则，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。
 
 这意味着该项目更适合作为特定场景下的工程化工具，而非长期稳定的官方兼容方案。
 
@@ -674,7 +672,7 @@ HTTP status: `200`
 
 `queryByCondition` 相关 debug 日志会记录列表数量、候选项 key、原始标识符值和归一化后的标识符，用于排查上游字段变更、列表项缺少 `mainId` / `domainId` / `serviceId`、详情接口不可用等问题。
 
-验证码相关 debug 日志会记录检测方法、候选坐标、候选置信度、当前验证码尝试序号、提交坐标对应的基准 left 和探测偏移，以及每次 `checkImage` 拒绝时的上游返回码和消息，用于排查模板路径失效、图像路径误检、主候选排序异常、探测偏移效果和验证码窗口过期等问题。
+验证码相关 debug 日志会记录检测出的缺口坐标、当前 challenge 的候选 offset 列表、当前验证码尝试序号，以及每次 `checkImage` 拒绝时的上游返回码和消息，用于排查灰色缺口检测失效、中心坐标偏移过大、当前 challenge 内局部试探不足和验证码窗口过期等问题。
 
 如果同时开启 `debug.enabled=true` 和 `debug.store_captcha_samples=true`，服务会把当前 challenge 的 `big.png`、`small.png` 和 `metadata.json` 落盘到 `storage/debug/captcha/`，用于离线比对真实 challenge。
 
