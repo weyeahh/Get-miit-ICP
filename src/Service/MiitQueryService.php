@@ -46,6 +46,7 @@ final class MiitQueryService
         $params = is_array($challenge['params'] ?? null) ? $challenge['params'] : [];
         $captchaUuid = (string) ($params['uuid'] ?? '');
         $bigImage = (string) ($params['bigImage'] ?? '');
+        $smallImage = (string) ($params['smallImage'] ?? '');
         $height = (int) ($params['height'] ?? -1);
         if ($captchaUuid === '' || $bigImage === '' || $height < 0) {
             throw new UpstreamException('captcha challenge params missing', 'upstream query failed');
@@ -53,7 +54,7 @@ final class MiitQueryService
 
         Debug::log($debug, 'step=getCheckImagePoint success=true captchaUUID=' . $captchaUuid . ' height=' . $height);
 
-        $solved = $solver->solve($captchaUuid, $bigImage, $height, $debug);
+        $solved = $solver->solve($captchaUuid, $bigImage, $smallImage, $height, $debug);
         $checkResponse = $solved['response'];
         $sign = (string) ($checkResponse['params'] ?? '');
         if ($sign === '') {

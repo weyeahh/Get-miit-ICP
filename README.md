@@ -124,7 +124,7 @@
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-12. `CaptchaSolver` 在本地识别缺口坐标，并调用 `/image/checkImage`
+12. `CaptchaSolver` 优先使用 `smallImage` 对 `bigImage` 做模板匹配来定位缺口坐标，失败时再回退到大图启发式识别，并调用 `/image/checkImage`
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配优先选择
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口
@@ -552,7 +552,7 @@ HTTP status: `200`
 15. 成功结果默认缓存 24 小时。
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-18. 验证码偏移尝试次数已缩减，避免单次请求过度放大。
+18. 验证码求解优先走 `smallImage` 模板匹配，只有模板匹配不可用时才回退到大图启发式识别；同时会过滤明显无效的极左候选值，减少 `left=0` 这类退化结果。
 19. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
 20. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
 21. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。

@@ -17,6 +17,8 @@ final class CaptchaSolver
     private const RELAXED_COLOR_TOLERANCE = 24;
     private const MAX_OFFSET_RADIUS = 4;
     private const MIN_VALID_LEFT = 5;
+    private const TEMPLATE_TOP_MARGIN = 12;
+    private const TEMPLATE_ALPHA_THRESHOLD = 16;
     private const MIN_COMPONENT_AREA = 900;
     private const MIN_SIDE_LENGTH = 24;
     private const TOP_HINT_ALLOWANCE = 8;
@@ -32,9 +34,11 @@ final class CaptchaSolver
     }
 
     /** @return array{rect: Rect, response: array<string, mixed>} */
-    public function solve(string $captchaUuid, string $bigImage, int $topHint, bool $debug): array
+    public function solve(string $captchaUuid, string $bigImage, string $smallImage, int $topHint, bool $debug): array
     {
-        $box = $this->detectSquareBase64WithHint($bigImage, $topHint);
+        $box = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint)
+            ?? $this->detectSquareBase64WithHint($bigImage, $topHint);
+
         if ($box->left < self::MIN_VALID_LEFT) {
             $box = $this->estimateGapFromBinaryBase64WithHint($bigImage, $topHint);
         }
@@ -66,6 +70,63 @@ final class CaptchaSolver
     {
         $imageData = $this->decodeBase64Image($encoded);
         return $this->detectSquareFromBinaryWithHint($imageData, $topHint);
+    }
+
+    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint): ?Rect
+    {
+        if ($smallEncoded === '') {
+            return null;
+        }
+
+        $bigData = $this->decodeBase64Image($bigEncoded);
+        $smallData = $this->decodeBase64Image($smallEncoded);
+        $big = imagecreatefromstring($bigData);
+        $small = imagecreatefromstring($smallData);
+        if (!$big instanceof GdImage || !$small instanceof GdImage) {
+            return null;
+        }
+
+        $bigWidth = imagesx($big);
+        $bigHeight = imagesy($big);
+        $smallWidth = imagesx($small);
+        $smallHeight = imagesy($small);
+        if ($smallWidth <= 0 || $smallHeight <= 0 || $smallWidth > $bigWidth || $smallHeight > $bigHeight) {
+            return null;
+        }
+
+        $startTop = max(0, $topHint - self::TEMPLATE_TOP_MARGIN);
+        $endTop = min($bigHeight - $smallHeight, $topHint + self::TEMPLATE_TOP_MARGIN);
+        if ($endTop < $startTop) {
+            $startTop = 0;
+            $endTop = max(0, $bigHeight - $smallHeight);
+        }
+
+        $bestScore = PHP_INT_MAX;
+        $bestLeft = -1;
+        $bestTop = $startTop;
+
+        for ($top = $startTop; $top <= $endTop; $top++) {
+            for ($left = 0; $left <= $bigWidth - $smallWidth; $left++) {
+                $score = $this->templateScore($big, $small, $left, $top, $smallWidth, $smallHeight);
+                if ($score < $bestScore) {
+                    $bestScore = $score;
+                    $bestLeft = $left;
+                    $bestTop = $top;
+                }
+            }
+        }
+
+        if ($bestLeft < self::MIN_VALID_LEFT) {
+            return null;
+        }
+
+        return new Rect(
+            $bestLeft,
+            $bestTop,
+            $bestLeft + $smallWidth - 1,
+            $bestTop + $smallHeight - 1,
+            $smallWidth * $smallHeight
+        );
     }
 
     private function estimateGapFromBinaryBase64WithHint(string $encoded, int $topHint): Rect
@@ -218,7 +279,7 @@ final class CaptchaSolver
         }
 
         return new Rect(
-            $bestLeft,
+            max(self::MIN_VALID_LEFT, $bestLeft),
             $top,
             min($width - 1, $bestLeft + self::GAP_APPROX_SIZE - 1),
             min($height - 1, $top + self::GAP_APPROX_SIZE - 1),
@@ -306,6 +367,40 @@ final class CaptchaSolver
     private function channelDistance(int $a, int $b): int
     {
         return abs($a - $b);
+    }
+
+    private function templateScore(GdImage $big, GdImage $small, int $offsetX, int $offsetY, int $width, int $height): int
+    {
+        $score = 0;
+        $samples = 0;
+
+        for ($y = 0; $y < $height; $y++) {
+            for ($x = 0; $x < $width; $x++) {
+                $smallColor = imagecolorat($small, $x, $y);
+                $alpha = ($smallColor >> 24) & 0x7F;
+                if ($alpha > self::TEMPLATE_ALPHA_THRESHOLD) {
+                    continue;
+                }
+
+                $smallRgb = [
+                    'r' => ($smallColor >> 16) & 0xFF,
+                    'g' => ($smallColor >> 8) & 0xFF,
+                    'b' => $smallColor & 0xFF,
+                ];
+                $bigRgb = $this->rgbAt($big, $offsetX + $x, $offsetY + $y);
+
+                $score += abs($smallRgb['r'] - $bigRgb['r']);
+                $score += abs($smallRgb['g'] - $bigRgb['g']);
+                $score += abs($smallRgb['b'] - $bigRgb['b']);
+                $samples++;
+            }
+        }
+
+        if ($samples === 0) {
+            return PHP_INT_MAX;
+        }
+
+        return intdiv($score, $samples);
     }
 
     private function clamp(int $value, int $low, int $high): int
