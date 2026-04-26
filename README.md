@@ -127,7 +127,7 @@
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`
 11. `CaptchaApi` 请求 `/image/getCheckImagePoint` 获取验证码挑战
-12. `CaptchaSolver` 会并行生成 `template`、`estimate`、`image` 三类候选，优先保留更可信的模板与估算结果，再调用 `/image/checkImage`；由于上游首次失败后会让验证码过期，同一验证码只提交一次，失败后重新获取验证码并尝试候选列表中的下一个偏移
+12. `CaptchaSolver` 会并行生成 `template-mask`、`template-content`、`estimate`、`image` 四类候选；其中模板候选会分别从“形状遮罩”和“内容差异”两个角度打分，避免单一路径退化后绑架最终偏移选择。由于上游首次失败后会让验证码过期，同一验证码只提交一次，失败后重新获取验证码并尝试候选列表中的下一个偏移
 13. `IcpApi` 请求 `/icpAbbreviateInfo/queryByCondition`
 14. `MiitQueryService` 对列表结果执行精确匹配，并优先选择具备有效标识符的候选项
 15. 使用返回的 `mainId`、`domainId`、`serviceId` 请求详情接口；若列表项已包含完整详情字段，可在详情标识缺失或详情接口失败时回退使用列表项
@@ -556,7 +556,7 @@ HTTP status: `200`
 15. 成功结果默认缓存 24 小时。
 16. 无备案记录默认缓存 30 分钟，但只有“列表接口成功且真正无记录”的 `404` 才默认写入 miss cache；精确匹配失败产生的 `404` 已标记为不可缓存，避免字段名或上游格式差异放大为持续的错误缓存。
 17. 缓存条目携带 `_schema_version`，未来响应结构变化时可以通过版本变更使旧缓存自动失效。
-18. 验证码求解不再由单一的 `image` 路径主导，而是同时保留 `template`、`estimate`、`image` 三类候选来源；模板法和估算法优先级更高，用来打破固定退化到单一左值的问题。
+18. 验证码求解不再由单一的 `image` 路径主导，而是同时保留 `template-mask`、`template-content`、`estimate`、`image` 多类候选来源；模板候选优先从“形状遮罩”和“内容差异”两个方向给出坐标，用来打破固定退化到单一左值的问题。
 19. `estimate` 兜底估算不再按“从最左边开始全局扫描”选第一个高分区域，而是以默认中心位置为起点向两侧扩展搜索；当多个位置得分接近时，优先保留更接近默认中心的候选，减少稳定退化到 `left=5` 一类左边界值的问题。
 20. `CaptchaSolver` 对同一个验证码 uuid 只提交一次 `checkImage`；如果失败，会重新获取验证码并根据候选偏移列表选择下一个 offset，避免触发“校验图片信息过期”。
 21. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配且具备有效标识符的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。

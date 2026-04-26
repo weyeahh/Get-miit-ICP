@@ -20,7 +20,8 @@ final class CaptchaSolver
     private const MAX_CHALLENGE_ATTEMPTS = 5;
     private const DEFAULT_LEFT = 80;
     private const TEMPLATE_TOP_MARGIN = 8;
-    private const TEMPLATE_MIN_AVERAGE_SCORE = 18;
+    private const TEMPLATE_MIN_MASK_SCORE = 18;
+    private const TEMPLATE_MAX_CONTENT_DIFF = 60;
     private const TEMPLATE_SAMPLE_STEP = 3;
     private const TEMPLATE_ALPHA_THRESHOLD = 16;
     private const MIN_COMPONENT_AREA = 900;
@@ -141,8 +142,7 @@ final class CaptchaSolver
     {
         $detections = [];
 
-        $template = $this->matchTemplateBase64WithHint($bigImage, $smallImage, $topHint);
-        if ($template !== null) {
+        foreach ($this->matchTemplateCandidates($bigImage, $smallImage, $topHint) as $template) {
             $detections[] = $template;
         }
 
@@ -150,20 +150,22 @@ final class CaptchaSolver
         $detections[] = ['method' => 'estimate', 'rect' => $estimate, 'score' => 0];
 
         $image = $this->detectSquareBase64WithHint($bigImage, $topHint);
-        if ($this->isSuspiciousLeft($image->left)) {
-            Debug::log($debug, 'step=detect rejected_suspicious_left', [
-                'method' => 'image',
-                'left' => $image->left,
-                'min_valid_left' => self::MIN_VALID_LEFT,
-            ]);
-        } else {
-            $detections[] = ['method' => 'image', 'rect' => $image, 'score' => 0];
+        if ($image !== null) {
+            if ($this->isSuspiciousLeft($image->left)) {
+                Debug::log($debug, 'step=detect rejected_suspicious_left', [
+                    'method' => 'image',
+                    'left' => $image->left,
+                    'min_valid_left' => self::MIN_VALID_LEFT,
+                ]);
+            } else {
+                $detections[] = ['method' => 'image', 'rect' => $image, 'score' => 0];
+            }
         }
 
         return $this->deduplicateDetections($detections);
     }
 
-    private function detectSquareBase64WithHint(string $encoded, int $topHint): Rect
+    private function detectSquareBase64WithHint(string $encoded, int $topHint): ?Rect
     {
         $imageData = $this->decodeBase64Image($encoded);
         return $this->detectSquareFromBinaryWithHint($imageData, $topHint);
@@ -199,11 +201,11 @@ final class CaptchaSolver
         ];
     }
 
-    /** @return array{method: string, rect: Rect, score: int}|null */
-    private function matchTemplateBase64WithHint(string $bigEncoded, string $smallEncoded, int $topHint): ?array
+    /** @return list<array{method: string, rect: Rect, score: int}> */
+    private function matchTemplateCandidates(string $bigEncoded, string $smallEncoded, int $topHint): array
     {
         if ($smallEncoded === '') {
-            return null;
+            return [];
         }
 
         $bigData = $this->decodeBase64Image($bigEncoded);
@@ -211,7 +213,7 @@ final class CaptchaSolver
         $big = imagecreatefromstring($bigData);
         $small = imagecreatefromstring($smallData);
         if (!$big instanceof GdImage || !$small instanceof GdImage) {
-            return null;
+            return [];
         }
 
         $bigWidth = imagesx($big);
@@ -219,7 +221,7 @@ final class CaptchaSolver
         $smallWidth = imagesx($small);
         $smallHeight = imagesy($small);
         if ($smallWidth <= 0 || $smallHeight <= 0 || $smallWidth > $bigWidth || $smallHeight > $bigHeight) {
-            return null;
+            return [];
         }
 
         $startTop = max(0, $topHint - self::TEMPLATE_TOP_MARGIN);
@@ -231,42 +233,67 @@ final class CaptchaSolver
 
         $maxTemplateLeft = $bigWidth - $smallWidth;
         if ($maxTemplateLeft < self::MIN_VALID_LEFT) {
-            return null;
+            return [];
         }
 
         $startLeft = self::MIN_VALID_LEFT;
         $endLeft = $maxTemplateLeft;
 
-        $bestScore = -1;
-        $bestLeft = -1;
-        $bestTop = $startTop;
+        $bestMaskScore = -1;
+        $bestMaskLeft = -1;
+        $bestMaskTop = $startTop;
+        $bestContentScore = PHP_INT_MAX;
+        $bestContentLeft = -1;
+        $bestContentTop = $startTop;
 
         for ($top = $startTop; $top <= $endTop; $top++) {
             for ($left = $startLeft; $left <= $endLeft; $left++) {
-                $score = $this->templateScore($big, $small, $left, $top, $smallWidth, $smallHeight);
-                if ($score > $bestScore) {
-                    $bestScore = $score;
-                    $bestLeft = $left;
-                    $bestTop = $top;
+                $maskScore = $this->templateMaskScore($big, $small, $left, $top, $smallWidth, $smallHeight);
+                if ($maskScore > $bestMaskScore) {
+                    $bestMaskScore = $maskScore;
+                    $bestMaskLeft = $left;
+                    $bestMaskTop = $top;
+                }
+
+                $contentScore = $this->templateContentDifference($big, $small, $left, $top, $smallWidth, $smallHeight);
+                if ($contentScore < $bestContentScore) {
+                    $bestContentScore = $contentScore;
+                    $bestContentLeft = $left;
+                    $bestContentTop = $top;
                 }
             }
         }
 
-        if ($bestLeft < self::MIN_VALID_LEFT || $bestScore < self::TEMPLATE_MIN_AVERAGE_SCORE) {
-            return null;
+        $candidates = [];
+        if ($bestMaskLeft >= self::MIN_VALID_LEFT && $bestMaskScore >= self::TEMPLATE_MIN_MASK_SCORE) {
+            $candidates[] = [
+                'method' => 'template-mask',
+                'rect' => new Rect(
+                    $bestMaskLeft,
+                    $bestMaskTop,
+                    $bestMaskLeft + $smallWidth - 1,
+                    $bestMaskTop + $smallHeight - 1,
+                    $smallWidth * $smallHeight
+                ),
+                'score' => $bestMaskScore,
+            ];
         }
 
-        return [
-            'method' => 'template',
-            'rect' => new Rect(
-                $bestLeft,
-                $bestTop,
-                $bestLeft + $smallWidth - 1,
-                $bestTop + $smallHeight - 1,
-                $smallWidth * $smallHeight
-            ),
-            'score' => $bestScore,
-        ];
+        if ($bestContentLeft >= self::MIN_VALID_LEFT && $bestContentScore <= self::TEMPLATE_MAX_CONTENT_DIFF) {
+            $candidates[] = [
+                'method' => 'template-content',
+                'rect' => new Rect(
+                    $bestContentLeft,
+                    $bestContentTop,
+                    $bestContentLeft + $smallWidth - 1,
+                    $bestContentTop + $smallHeight - 1,
+                    $smallWidth * $smallHeight
+                ),
+                'score' => max(0, 255 - $bestContentScore),
+            ];
+        }
+
+        return $candidates;
     }
 
     private function estimateGapFromBinaryBase64WithHint(string $encoded, int $topHint): Rect
@@ -307,7 +334,7 @@ final class CaptchaSolver
         return $data;
     }
 
-    private function detectSquareFromBinaryWithHint(string $binary, int $topHint): Rect
+    private function detectSquareFromBinaryWithHint(string $binary, int $topHint): ?Rect
     {
         $img = imagecreatefromstring($binary);
         if (!$img instanceof GdImage) {
@@ -321,13 +348,7 @@ final class CaptchaSolver
             }
         }
 
-        $box = $topHint >= 0 ? $this->estimateGapFromHint($img, $topHint) : null;
-
-        if ($box !== null) {
-            return $box;
-        }
-
-        throw new UpstreamException('square not found', 'upstream query failed');
+        return null;
     }
 
     private function findCaptchaSquare(GdImage $img, int $tolerance, int $topHint): ?Rect
@@ -512,7 +533,7 @@ final class CaptchaSolver
         return abs($a - $b);
     }
 
-    private function templateScore(GdImage $big, GdImage $small, int $offsetX, int $offsetY, int $width, int $height): int
+    private function templateMaskScore(GdImage $big, GdImage $small, int $offsetX, int $offsetY, int $width, int $height): int
     {
         $score = 0;
         $samples = 0;
@@ -533,6 +554,40 @@ final class CaptchaSolver
 
         if ($samples === 0) {
             return -1;
+        }
+
+        return intdiv($score, $samples);
+    }
+
+    private function templateContentDifference(GdImage $big, GdImage $small, int $offsetX, int $offsetY, int $width, int $height): int
+    {
+        $score = 0;
+        $samples = 0;
+
+        for ($y = 0; $y < $height; $y += self::TEMPLATE_SAMPLE_STEP) {
+            for ($x = 0; $x < $width; $x += self::TEMPLATE_SAMPLE_STEP) {
+                $smallColor = imagecolorat($small, $x, $y);
+                $alpha = ($smallColor >> 24) & 0x7F;
+                if ($alpha > self::TEMPLATE_ALPHA_THRESHOLD) {
+                    continue;
+                }
+
+                $smallRgb = [
+                    'r' => ($smallColor >> 16) & 0xFF,
+                    'g' => ($smallColor >> 8) & 0xFF,
+                    'b' => $smallColor & 0xFF,
+                ];
+                $bigRgb = $this->rgbAt($big, $offsetX + $x, $offsetY + $y);
+
+                $score += abs($smallRgb['r'] - $bigRgb['r']);
+                $score += abs($smallRgb['g'] - $bigRgb['g']);
+                $score += abs($smallRgb['b'] - $bigRgb['b']);
+                $samples++;
+            }
+        }
+
+        if ($samples === 0) {
+            return PHP_INT_MAX;
         }
 
         return intdiv($score, $samples);
