@@ -8,6 +8,7 @@ use GdImage;
 use Miit\Api\CaptchaApi;
 use Miit\Api\MiitClient;
 use Miit\Exception\MiitException;
+use Miit\Exception\UpstreamException;
 use Miit\Support\Debug;
 
 final class CaptchaSolver
@@ -53,7 +54,7 @@ final class CaptchaSolver
             }
         }
 
-        throw new MiitException('checkImage failed around detected left=' . $box->left);
+        throw new UpstreamException('checkImage failed around detected left=' . $box->left, 'upstream query failed');
     }
 
     private function detectSquareBase64WithHint(string $encoded, int $topHint): Rect
@@ -83,7 +84,7 @@ final class CaptchaSolver
 
         $data = base64_decode($cleaned, true);
         if ($data === false) {
-            throw new MiitException('unsupported base64 image data');
+            throw new UpstreamException('unsupported base64 image data', 'upstream query failed');
         }
 
         return $data;
@@ -93,25 +94,23 @@ final class CaptchaSolver
     {
         $img = imagecreatefromstring($binary);
         if (!$img instanceof GdImage) {
-            throw new MiitException('decode image failed');
+            throw new UpstreamException('decode image failed', 'upstream query failed');
         }
 
         foreach ([self::COLOR_TOLERANCE, self::RELAXED_COLOR_TOLERANCE] as $tolerance) {
             $box = $this->findCaptchaSquare($img, $tolerance, $topHint);
             if ($box !== null) {
-                imagedestroy($img);
                 return $box;
             }
         }
 
         $box = $topHint >= 0 ? $this->estimateGapFromHint($img, $topHint) : null;
-        imagedestroy($img);
 
         if ($box !== null) {
             return $box;
         }
 
-        throw new MiitException('square not found');
+        throw new UpstreamException('square not found', 'upstream query failed');
     }
 
     private function findCaptchaSquare(GdImage $img, int $tolerance, int $topHint): ?Rect

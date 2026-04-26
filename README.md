@@ -197,6 +197,7 @@
 6. 运行用户需要对项目目录下的 `storage/` 有读写权限。
 7. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
 8. 若需要验证 `composer.json` 语义，需额外安装 Composer CLI。
+9. 在 PHP 8.5+ 环境下，项目已移除 `curl_close()` 和 `imagedestroy()` 这类已弃用且无实际效果的调用，避免页面直接输出 Deprecated 警告。
 9. 如需调整缓存时长、限流阈值、等待时间等参数，优先修改 `config/app.php`，避免直接改源码逻辑。
 
 建议在 Linux 或具备完整 PHP CLI 环境的服务器上运行。
@@ -558,13 +559,14 @@ HTTP status: `200`
 19. `MiitQueryService` 对列表结果不再机械相信第一条，而是优先寻找与查询 domain 精确匹配的项；找不到精确匹配时返回 `404`，避免错误主体写入成功缓存。
 20. 错误被分成参数错误、频控错误、存储错误、环境错误、上游错误和内部错误，不再把所有异常粗暴归类为上游失败。
 21. `AuthApi`、`CaptchaApi`、`MiitClient` 和 `MiitQueryService` 中的上游协议错误统一升级为 `UpstreamException`，保证冷却策略只针对真正的上游故障触发。
-22. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积。
-23. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
-24. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
-25. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
-26. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
-27. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
-28. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
+22. 验证码识别失败、图片解码失败、`checkImage` 偏移尝试耗尽等路径也统一归类为 `UpstreamException`，不再错误落入内部错误分支。
+23. `MiitClient` 会截断写入日志的上游错误详情，防止异常响应体无限放大日志体积。
+24. `DetailSanitizer` 优先使用 `mbstring` 做 UTF-8 安全截断；若环境缺少 `mbstring`，则自动回退为字节截断而不是 fatal。
+25. `Logger` 采用 best-effort 策略，日志目录不可写时会降级尝试写入 `php://stderr`，不会再向外抛异常。
+26. `JsonResponse` 会检查 `json_encode()` 结果，编码失败时输出保底 JSON，并同步把 HTTP 状态修正为 `500`，避免 HTTP 状态和 JSON body code 矛盾。
+27. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
+28. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
+29. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
 
 ## Implementation Notes
 
