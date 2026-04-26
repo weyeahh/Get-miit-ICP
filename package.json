@@ -1,0 +1,17 @@
+{
+  "name": "get-miit-icp-node",
+  "version": "1.0.0",
+  "description": "Node.js MIIT ICP query service migrated from the PHP implementation.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node tests/run.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  }
+}
