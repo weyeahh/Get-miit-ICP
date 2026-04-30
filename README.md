@@ -275,6 +275,10 @@ config/app.js
 14. `auth.api_key_enabled`
 15. `auth.api_key`
 16. `log.max_detail_length`
+17. `storage.backend`
+18. `storage.redis.url`
+19. `storage.redis.key_prefix`
+20. `storage.redis.connect_timeout`
 
 若环境变量和配置文件同时存在，环境变量优先级更高。
 
@@ -339,6 +343,22 @@ export default {
     log: {
         // 日志详情最大截断长度。过长的上游错误会被裁剪，避免日志膨胀。
         max_detail_length: 512,
+    },
+     storage: {
+        // 存储后端，可选 `file`（默认）或 `redis`。
+        // 设为 `redis` 时，缓存、限流和分布式锁均使用 Redis 实现。
+        backend: 'file',
+
+        redis: {
+            // Redis 连接地址，格式为 redis://host:port
+            url: 'redis://127.0.0.1:6379',
+
+            // Redis key 前缀，用于命名空间隔离
+            key_prefix: 'miit:',
+
+            // Redis 连接超时，单位毫秒
+            connect_timeout: 3000,
+        },
     },
 };
 ```
@@ -414,6 +434,8 @@ MIIT_DEBUG_ENABLED=true
 MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=true
 MIIT_API_KEY_ENABLED=true
 MIIT_API_KEY=your-secret-key
+MIIT_STORAGE_BACKEND=redis
+MIIT_STORAGE_REDIS_URL=redis://127.0.0.1:6379
 ```
 
 这些环境变量会分别覆盖：

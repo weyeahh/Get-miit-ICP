@@ -1,4 +1,3 @@
-import { FileCache } from '../Cache/fileCache.js';
 import { QueryCache } from '../Cache/queryCache.js';
 import { AppConfig } from '../Config/appConfig.js';
 import {
@@ -11,8 +10,10 @@ import {
 } from '../Exception/miitException.js';
 import { JsonResponse } from '../Http/jsonResponse.js';
 import { DomainQueryLock } from '../RateLimit/domainQueryLock.js';
-import { FileRateLimiter } from '../RateLimit/fileRateLimiter.js';
 import { QueryGuard } from '../RateLimit/queryGuard.js';
+import { createCacheStore } from '../Storage/cacheStore.js';
+import { createLockProvider } from '../Storage/lockProvider.js';
+import { createRateLimitStore } from '../Storage/rateLimitStore.js';
 import { MiitQueryService } from '../Service/miitQueryService.js';
 import { ClientIp } from '../Support/clientIp.js';
 import { DetailSanitizer } from '../Support/detailSanitizer.js';
@@ -52,9 +53,9 @@ export async function handleQuery(request, response) {
     }
 
     const normalizer = new DomainNormalizer();
-    queryCache = new QueryCache(new FileCache(), config);
-    guard = new QueryGuard(new FileRateLimiter(), config);
-    const domainQueryLock = new DomainQueryLock();
+    queryCache = new QueryCache(await createCacheStore(config), config);
+    guard = new QueryGuard(await createRateLimitStore(config), config);
+    const domainQueryLock = new DomainQueryLock(await createLockProvider(config));
     const debug = config.bool('debug.enabled');
 
     domain = normalizer.normalize(rawDomain);

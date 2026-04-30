@@ -12,6 +12,7 @@
     "test": "node tests/run.js"
   },
   "dependencies": {
+    "ioredis": "^5.10.1",
     "sharp": "^0.33.5"
   }
 }

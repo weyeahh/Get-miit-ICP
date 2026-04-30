@@ -17,6 +17,10 @@ const ENV_MAP = new Map([
   ['MIIT_API_KEY_ENABLED', 'auth.api_key_enabled'],
   ['MIIT_API_KEY', 'auth.api_key'],
   ['MIIT_LOG_MAX_DETAIL_LENGTH', 'log.max_detail_length'],
+  ['MIIT_STORAGE_BACKEND', 'storage.backend'],
+  ['MIIT_STORAGE_REDIS_URL', 'storage.redis.url'],
+  ['MIIT_STORAGE_REDIS_KEY_PREFIX', 'storage.redis.key_prefix'],
+  ['MIIT_STORAGE_REDIS_CONNECT_TIMEOUT', 'storage.redis.connect_timeout'],
 ]);
 
 export class AppConfig {

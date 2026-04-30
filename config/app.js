@@ -25,4 +25,12 @@ export default {
   log: {
     max_detail_length: 512,
   },
+  storage: {
+    backend: 'file',
+    redis: {
+      url: 'redis://127.0.0.1:6379',
+      key_prefix: 'miit:',
+      connect_timeout: 3000,
+    },
+  },
 };
