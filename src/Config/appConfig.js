@@ -1,4 +1,41 @@
-import defaults from '../../config/app.js';
+const DEFAULTS = {
+  cache: {
+    schema_version: 'v1',
+    success_ttl: 86400,
+    miss_ttl: 1800,
+    success_stale_ttl: 604800,
+    miss_stale_ttl: 86400,
+  },
+  ratelimit: {
+    global_qps: 5,
+    ip_per_minute: 60,
+    domain_per_window: 10,
+    domain_window_seconds: 120,
+    domain_cooldown_seconds: 60,
+    global_cooldown_seconds: 10,
+    domain_wait_timeout_seconds: 3,
+    domain_wait_interval_milliseconds: 250,
+  },
+  auth: {
+    api_key_enabled: false,
+    api_key: '',
+  },
+  debug: {
+    enabled: false,
+    store_captcha_samples: false,
+  },
+  log: {
+    max_detail_length: 512,
+  },
+  storage: {
+    backend: 'file',
+    redis: {
+      url: 'redis://127.0.0.1:6379',
+      key_prefix: 'miit:',
+      connect_timeout: 3000,
+    },
+  },
+};
 
 const ENV_MAP = new Map([
   ['MIIT_CACHE_SCHEMA_VERSION', 'cache.schema_version'],
@@ -27,7 +64,7 @@ const ENV_MAP = new Map([
 
 export class AppConfig {
   constructor(overrides = {}) {
-    this.values = flatten(defaults);
+    this.values = flatten(DEFAULTS);
     for (const [key, value] of this.envOverrides()) {
       this.values.set(key, value);
     }

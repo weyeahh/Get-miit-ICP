@@ -23,7 +23,7 @@
 8. 增加成功缓存和空结果短缓存，减少重复请求上游。
 9. 错误对外脱敏，对内写入服务端日志。
 10. 日志写入采用 best-effort 策略，日志失败不会破坏 API 响应。
-11. 将用户可调参数迁移到独立配置文件 `config/app.js`，并支持环境变量覆盖。
+11. 将用户可调参数迁移到内置默认配置，支持通过 `.env` 环境变量覆盖。
 12. 增加 queryByCondition 候选项诊断、标识符字段变体兼容和列表详情兜底。
 13. 增加验证码候选置信度日志与可选样本落盘，便于离线比对真实 challenge。
 14. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
@@ -94,8 +94,7 @@
 |  |  `- domainNormalizer.js
 |  |- app.js
 |  `- server.js
-|- config/
-|  `- app.js
+|- .env.example
 |- storage/
 |  |- cache/
 |  |- locks/
@@ -153,7 +152,7 @@
    负责域名规范化、长度限制、字符合法性和标签校验。
 
 4. `src/Config/appConfig.js`
-   负责加载 `config/app.js` 中的默认配置，并支持环境变量覆盖默认值。同时对关键整数配置做上下界夹紧，避免 0、负数或异常大值破坏运行语义。
+   负责加载内置默认配置，并支持通过 `.env` 环境变量覆盖默认值。同时对关键整数配置做上下界夹紧，避免 0、负数或异常大值破坏运行语义。
 
 5. `src/RateLimit/queryGuard.js`
    负责全局、IP、domain 限流和失败冷却策略。当前通过 `consumeAll()` 实现多维限流的原子消费，避免单维失败污染其他维度计数。
@@ -210,24 +209,20 @@
 2. 已安装 `sharp` 依赖（`npm install`）。
 3. 运行用户需要对项目目录下的 `storage/` 有读写权限。
 4. 建议保留仓库内的 `.gitignore` 和 `storage/.gitkeep` 文件，避免运行产物被误提交。
-5. 如需调整缓存时长、限流阈值、等待时间等参数，优先修改 `config/app.js`，避免直接改源码逻辑。
+5. 如需调整缓存时长、限流阈值、等待时间等参数，通过 `.env` 环境变量设置，避免直接改源码逻辑。
 
 建议在 Linux 或具备完整 Node.js 环境的服务器上运行。
 
 ## Quick Start
 
-安装依赖并启动：
-
 ```bash
+cp .env.example .env
+# 编辑 .env 按需修改配置
 npm install
 npm start
 ```
 
-或直接运行：
-
-```bash
-node src/server.js
-```
+> 编辑 `port`、`debug` 或切换存储后端等，均可通过 `.env` 设置。若未创建 `.env`，服务将使用内置默认值运行。
 
 然后访问：
 
@@ -235,265 +230,95 @@ node src/server.js
 http://127.0.0.1:8080/?domain=baidu.com
 ```
 
-调试模式：
+## Configuration
 
-在配置文件中开启：
+所有配置项通过环境变量设置，推荐使用 `.env` 文件。将 `.env.example` 复制为 `.env` 并按需修改即可。
 
-```js
-debug: {
-    enabled: true,
-    store_captcha_samples: true,
-},
-```
+未设置环境变量时，服务使用代码内置默认值。所有整型配置都会经过 `AppConfig` 的上下界夹紧，不会直接相信原始值（`0`、负数或极大值会被强制压回安全范围）。
 
-开启后，请求：
+### 环境变量列表
 
-```text
-http://127.0.0.1:8080/?domain=baidu.com
-```
+| 变量名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `HOST` | string | `127.0.0.1` | 服务监听地址 |
+| `PORT` | integer | `8080` | 服务监听端口 |
+| `MIIT_CACHE_SCHEMA_VERSION` | string | `v1` | 缓存结构版本，修改后旧缓存自动失效 |
+| `MIIT_CACHE_SUCCESS_TTL` | integer | `86400` | 成功查询结果缓存时长（秒），范围 60–604800 |
+| `MIIT_CACHE_MISS_TTL` | integer | `1800` | 空结果缓存时长（秒），范围 30–86400 |
+| `MIIT_CACHE_SUCCESS_STALE_TTL` | integer | `604800` | 成功结果 Redis 物理保留时长（秒），仅 `redis` 后端生效，范围 300–2592000 |
+| `MIIT_CACHE_MISS_STALE_TTL` | integer | `86400` | 空结果 Redis 物理保留时长（秒），仅 `redis` 后端生效，范围 60–604800 |
+| `MIIT_RATE_LIMIT_GLOBAL_QPS` | integer | `5` | 全局每秒最大上游查询数，范围 1–1000 |
+| `MIIT_RATE_LIMIT_IP_PER_MINUTE` | integer | `60` | 单 IP 每分钟最大上游查询数，范围 1–10000 |
+| `MIIT_RATE_LIMIT_DOMAIN_PER_WINDOW` | integer | `10` | 单 domain 每窗口最大查询数，范围 1–1000 |
+| `MIIT_RATE_LIMIT_DOMAIN_WINDOW_SECONDS` | integer | `120` | domain 限流窗口大小（秒），范围 1–86400 |
+| `MIIT_RATE_LIMIT_DOMAIN_COOLDOWN_SECONDS` | integer | `60` | 单 domain 上游失败后冷却时长（秒），范围 1–3600 |
+| `MIIT_RATE_LIMIT_GLOBAL_COOLDOWN_SECONDS` | integer | `10` | 全局冷却时长（秒），范围 1–3600 |
+| `MIIT_RATE_LIMIT_DOMAIN_WAIT_TIMEOUT_SECONDS` | integer | `3` | singleflight 等待窗口（秒），范围 0–10 |
+| `MIIT_RATE_LIMIT_DOMAIN_WAIT_INTERVAL_MILLISECONDS` | integer | `250` | singleflight 等待期间缓存轮询间隔（毫秒），范围 10–1000 |
+| `MIIT_API_KEY_ENABLED` | boolean | `false` | 是否开启 API key 鉴权 |
+| `MIIT_API_KEY` | string | 无 | API key 值，开启鉴权时必填 |
+| `MIIT_DEBUG_ENABLED` | boolean | `false` | 是否启用流程调试日志 |
+| `MIIT_DEBUG_STORE_CAPTCHA_SAMPLES` | boolean | `false` | 是否保存验证码 challenge 样本到磁盘，仅 `debug.enabled=true` 时生效 |
+| `MIIT_LOG_MAX_DETAIL_LENGTH` | integer | `512` | 日志详情最大截断长度，范围 64–4096 |
+| `MIIT_STORAGE_BACKEND` | string | `file` | 存储后端，可选 `file` 或 `redis` |
+| `MIIT_STORAGE_REDIS_URL` | string | `redis://127.0.0.1:6379` | Redis 连接地址 |
+| `MIIT_STORAGE_REDIS_KEY_PREFIX` | string | `miit:` | Redis key 前缀，用于命名空间隔离 |
+| `MIIT_STORAGE_REDIS_CONNECT_TIMEOUT` | integer | `3000` | Redis 连接超时（毫秒） |
 
-当前版本不再支持通过 URL 参数控制 debug，是否输出调试日志只由配置文件或环境变量决定。
+### .env 示例
 
-用户可调配置位于：
+参见项目根目录下的 `.env.example` 文件，也可直接参考以下内容：
 
-```text
-config/app.js
-```
+```bash
+# 复制此文件为 .env 并按需修改
+# 所有变量均为可选，未设置时使用代码内置默认值
 
-当前可直接配置的内容包括：
+# 服务监听
+HOST=127.0.0.1
+PORT=8080
 
-1. `cache.schema_version`
-2. `cache.success_ttl`
-3. `cache.miss_ttl`
-4. `cache.success_stale_ttl`
-5. `cache.miss_stale_ttl`
-6. `ratelimit.global_qps`
-7. `ratelimit.ip_per_minute`
-8. `ratelimit.domain_per_window`
-9. `ratelimit.domain_window_seconds`
-10. `ratelimit.domain_cooldown_seconds`
-11. `ratelimit.global_cooldown_seconds`
-12. `ratelimit.domain_wait_timeout_seconds`
-13. `ratelimit.domain_wait_interval_milliseconds`
-14. `debug.enabled`
-15. `debug.store_captcha_samples`
-16. `auth.api_key_enabled`
-17. `auth.api_key`
-18. `log.max_detail_length`
-19. `storage.backend`
-20. `storage.redis.url`
-21. `storage.redis.key_prefix`
-22. `storage.redis.connect_timeout`
-
-若环境变量和配置文件同时存在，环境变量优先级更高。
-
-完整配置文件示例：
-
-```js
-export default {
-    cache: {
-        // 用于区分缓存结构版本。调整响应结构时可修改此值，使旧缓存自动失效。
-        schema_version: 'v1',
-
-        // 成功查询结果缓存时长，单位：秒。默认 86400，即 24 小时。
-        success_ttl: 86400,
-
-        // 空结果缓存时长，单位：秒。默认 1800，即 30 分钟。
-        miss_ttl: 1800,
-
-        // 成功结果在 Redis 中的保留时长（含过期数据），单位：秒。默认 604800，即 7 天。
-        // 仅在 storage.backend=redis 时生效。Redis 键的实际 TTL 使用此值，
-        // 而逻辑过期由 success_ttl 控制。过期后数据仍可通过 stale 降级读取。
-        success_stale_ttl: 604800,
-
-        // 空结果在 Redis 中的保留时长（含过期数据），单位：秒。默认 86400，即 1 天。
-        // 仅在 storage.backend=redis 时生效。
-        miss_stale_ttl: 86400,
-    },
-
-    ratelimit: {
-        // 全局每秒允许进入上游查询链路的最大请求数。
-        global_qps: 5,
-
-        // 单个 IP 每分钟允许进入上游查询链路的最大请求数。
-        ip_per_minute: 60,
-
-        // 单个 domain 在指定窗口内允许进入上游查询链路的最大请求数。
-        domain_per_window: 10,
-
-        // domain 限流窗口大小，单位：秒。默认 120，即 2 分钟。
-        domain_window_seconds: 120,
-
-        // 单个 domain 在上游失败后进入冷却状态的时长，单位：秒。
-        domain_cooldown_seconds: 60,
-
-        // 全局冷却时长，单位：秒。用于上游异常后短时间减压。
-        global_cooldown_seconds: 10,
-
-        // 同一个 domain 的并发请求在等待已有查询结果时的最长等待时间，单位：秒。
-        domain_wait_timeout_seconds: 3,
-
-        // 等待期间轮询缓存的间隔，单位：毫秒。
-        domain_wait_interval_milliseconds: 250,
-    },
-
-    auth: {
-        // 是否开启 API key 鉴权。开启后请求必须携带 x-api-key 头。
-        api_key_enabled: false,
-
-        // API key 值，请求必须匹配此值才能通过鉴权。
-        api_key: '',
-    },
-
-    debug: {
-        // 是否启用调试输出。启用后服务会把流程日志写到 storage/logs 和 stderr。
-        enabled: false,
-
-        // 是否在 debug 模式下把验证码 challenge 样本落盘到 storage/debug/captcha/。
-        // 开启后会额外保存 big.png、small.png 和 metadata.json，便于离线排查识别偏差。
-        store_captcha_samples: false,
-    },
-
-    log: {
-        // 日志详情最大截断长度。过长的上游错误会被裁剪，避免日志膨胀。
-        max_detail_length: 512,
-    },
-     storage: {
-        // 存储后端，可选 `file`（默认）或 `redis`。
-        // 设为 `redis` 时，缓存、限流和分布式锁均使用 Redis 实现。
-        backend: 'file',
-
-        redis: {
-            // Redis 连接地址，格式为 redis://host:port
-            url: 'redis://127.0.0.1:6379',
-
-            // Redis key 前缀，用于命名空间隔离
-            key_prefix: 'miit:',
-
-            // Redis 连接超时，单位毫秒
-            connect_timeout: 3000,
-        },
-    },
-};
-```
-
-配置项详细说明：
-
-1. `cache.schema_version`
-   用于控制缓存结构版本。只要这个值变化，旧缓存 key 就会自动失效。适合在响应字段调整、缓存结构变化时使用。
-
-2. `cache.success_ttl`
-   成功查询结果缓存时长，单位为秒。备案信息变更频率通常较低，默认 24 小时比较保守且能显著降低上游访问量。
-
-3. `cache.miss_ttl`
-   空结果缓存时长，单位为秒。默认 30 分钟。这个值不宜过长，否则会放大短期误判；也不宜过短，否则会反复打上游。
-
-4. `cache.success_stale_ttl`
-   成功结果在 Redis 中的实际保留时长（含过期数据），单位为秒。仅在 `storage.backend=redis` 时生效。默认 7 天。Redis 键的物理 TTL 使用此值，而逻辑过期判断使用 `success_ttl`。当上游不可用时，已过期但仍保留在 Redis 中的数据可作为降级响应返回，标记 `stale: true`。此值应大于 `success_ttl`，否则 stale 降级无法生效。
-
-5. `cache.miss_stale_ttl`
-   空结果在 Redis 中的实际保留时长（含过期数据），单位为秒。仅在 `storage.backend=redis` 时生效。默认 1 天。原理同 `success_stale_ttl`。
-
-6. `ratelimit.global_qps`
-   控制整个服务每秒最多有多少个请求进入真实上游链路。这个值越小，对上游越安全，但峰值承载能力越弱。
-
-7. `ratelimit.ip_per_minute`
-   控制单个来源 IP 在一分钟内最多触发多少次真实上游查询。适合限制恶意刷接口或误操作放量。
-
-8. `ratelimit.domain_per_window`
-   控制单个域名在限流窗口内可被查询的次数。适合防止热门 domain 或恶意 domain 被持续打上游。
-
-9. `ratelimit.domain_window_seconds`
-   指定 domain 限流窗口的长度。它和 `domain_per_window` 共同决定了单域的查询密度。
-
-10. `ratelimit.domain_cooldown_seconds`
-   单域在上游失败后进入冷却状态的时长。上游疑似风控或验证码连续失败时，这个值可以适当加大。
-
-11. `ratelimit.global_cooldown_seconds`
-   全局冷却时长。适合在上游明显异常时让整个服务短时间减速。
-
-12. `ratelimit.domain_wait_timeout_seconds`
-   singleflight 等待窗口。多个请求查询同一 domain 时，后续请求会等待已有查询写入缓存，而不是立即重复打上游。这个值过大可能占用 worker，过小则更容易直接返回 429。
-
-13. `ratelimit.domain_wait_interval_milliseconds`
-   等待期间轮询缓存的间隔。间隔越小，结果命中更及时，但轮询更频繁；间隔越大，CPU 压力更低，但返回延迟更高。
-
-14. `debug.enabled`
-   控制是否启用流程调试日志。启用后服务会将关键步骤日志写入 `storage/logs/`，并同步尝试输出到 stderr。生产环境通常建议保持 `false`，排查完成后应关闭。
-
-15. `debug.store_captcha_samples`
-   控制在 `debug.enabled=true` 时是否额外保存验证码 challenge 样本。启用后服务会把当前 challenge 的 `big.png`、`small.png` 和 `metadata.json` 写入 `storage/debug/captcha/`，用于离线比对模板匹配、图像检测和最终候选排序。默认 `false`，因为它会产生额外磁盘写入并保留调试样本。
-
-16. `log.max_detail_length`
-   控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
-
-17. `auth.api_key_enabled`
-   控制是否开启 API key 鉴权。开启后每个请求必须在 `api_key` 查询参数或 `x-api-key` 请求头中提供密钥，值与 `auth.api_key` 匹配才能通过。查询参数和请求头同时存在时优先使用请求头。
-
-18. `auth.api_key`
-   API key 值。当 `auth.api_key_enabled` 为 `true` 时，请求的 `x-api-key` 头必须与此值完全一致。
-
-边界行为说明：
-
-1. 所有整型配置都会经过 `AppConfig` 的上下界夹紧，不会直接相信配置文件中的原始值。
-2. 即使你在 `config/app.js` 中配置了 `0`、负数或极大值，系统仍会强制压回安全范围。
-3. 因此配置文件的作用是“提供期望值”，最终运行值仍以 `AppConfig` 的边界规则为准。
-
-环境变量覆盖说明：
-
-1. 配置文件作为默认值来源。
-2. 环境变量会覆盖配置文件中的同名项。
-3. 构造函数显式传入的 overrides 优先级最高。
-
-例如：
-
-```text
-MIIT_CACHE_SUCCESS_TTL=43200
+# 缓存
+MIIT_CACHE_SCHEMA_VERSION=v1
+MIIT_CACHE_SUCCESS_TTL=86400
+MIIT_CACHE_MISS_TTL=1800
 MIIT_CACHE_SUCCESS_STALE_TTL=604800
 MIIT_CACHE_MISS_STALE_TTL=86400
+
+# 限流
 MIIT_RATE_LIMIT_GLOBAL_QPS=5
-MIIT_DEBUG_ENABLED=true
-MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=true
-MIIT_API_KEY_ENABLED=true
-MIIT_API_KEY=your-secret-key
-MIIT_STORAGE_BACKEND=redis
+MIIT_RATE_LIMIT_IP_PER_MINUTE=60
+MIIT_RATE_LIMIT_DOMAIN_PER_WINDOW=10
+MIIT_RATE_LIMIT_DOMAIN_WINDOW_SECONDS=120
+MIIT_RATE_LIMIT_DOMAIN_COOLDOWN_SECONDS=60
+MIIT_RATE_LIMIT_GLOBAL_COOLDOWN_SECONDS=10
+MIIT_RATE_LIMIT_DOMAIN_WAIT_TIMEOUT_SECONDS=3
+MIIT_RATE_LIMIT_DOMAIN_WAIT_INTERVAL_MILLISECONDS=250
+
+# 鉴权
+MIIT_API_KEY_ENABLED=false
+MIIT_API_KEY=
+
+# 调试
+MIIT_DEBUG_ENABLED=false
+MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=false
+
+# 日志
+MIIT_LOG_MAX_DETAIL_LENGTH=512
+
+# 存储
+MIIT_STORAGE_BACKEND=file
 MIIT_STORAGE_REDIS_URL=redis://127.0.0.1:6379
+MIIT_STORAGE_REDIS_KEY_PREFIX=miit:
+MIIT_STORAGE_REDIS_CONNECT_TIMEOUT=3000
 ```
 
-这些环境变量会分别覆盖：
+### 推荐调整策略
 
-1. `cache.success_ttl`
-2. `ratelimit.global_qps`
-3. `debug.enabled`
-4. `debug.store_captcha_samples`
-5. `auth.api_key_enabled`
-6. `auth.api_key`
-
-推荐调整策略：
-
-1. 单机低流量场景：
-   可以适当提高 `cache.success_ttl`，降低 `global_qps`，优先保护上游。
-
-2. 内网受控调用场景：
-   可以适当提高 `ip_per_minute`，但仍建议保持较短的 `domain_cooldown_seconds`。
-
-3. 若上游明显风控：
-   优先调大：
-   - `domain_cooldown_seconds`
-   - `global_cooldown_seconds`
-   同时降低：
-   - `global_qps`
-   - `domain_per_window`
-
-4. 若并发等待过多：
-   优先缩短：
-   - `domain_wait_timeout_seconds`
-   或增大：
-   - `domain_wait_interval_milliseconds`
-
-5. 若日志膨胀明显：
-   优先降低：
-   - `log.max_detail_length`
+1. **单机低流量场景**：适当提高 `MIIT_CACHE_SUCCESS_TTL`，降低 `MIIT_RATE_LIMIT_GLOBAL_QPS`，优先保护上游。
+2. **内网受控调用场景**：适当提高 `MIIT_RATE_LIMIT_IP_PER_MINUTE`，保持较短 `MIIT_RATE_LIMIT_DOMAIN_COOLDOWN_SECONDS`。
+3. **上游明显风控**：调大 `MIIT_RATE_LIMIT_DOMAIN_COOLDOWN_SECONDS` 和 `MIIT_RATE_LIMIT_GLOBAL_COOLDOWN_SECONDS`，同时降低 `MIIT_RATE_LIMIT_GLOBAL_QPS` 和 `MIIT_RATE_LIMIT_DOMAIN_PER_WINDOW`。
+4. **并发等待过多**：缩短 `MIIT_RATE_LIMIT_DOMAIN_WAIT_TIMEOUT_SECONDS` 或增大 `MIIT_RATE_LIMIT_DOMAIN_WAIT_INTERVAL_MILLISECONDS`。
+5. **日志膨胀明显**：降低 `MIIT_LOG_MAX_DETAIL_LENGTH`。
 
 ## API
 

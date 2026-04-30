@@ -1,5 +1,6 @@
 /storage/*
 node_modules/
+.env
 !/storage/.gitkeep
 !/storage/cache/
 !/storage/cache/.gitkeep
