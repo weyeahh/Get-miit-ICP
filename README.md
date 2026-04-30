@@ -196,15 +196,17 @@
 ## Quick Start
 
 ```bash
+git clone https://github.com/weyeahh/Get-miit-ICP.git
+cd Get-miit-ICP
 cp .env.example .env
 # 编辑 .env 按需修改配置
 npm install
 npm start
 ```
 
-> 编辑 `port`、`debug` 或切换存储后端等，均可通过 `.env` 设置。若未创建 `.env`，服务将使用内置默认值运行。
+> 编辑监听地址、端口、调试开关或切换存储后端等，均可通过 `.env` 设置。若未创建 `.env`，服务将使用内置默认值运行。
 
-然后访问：
+启动后访问：
 
 ```text
 http://127.0.0.1:8080/?domain=baidu.com
