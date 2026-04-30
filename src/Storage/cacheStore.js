@@ -11,5 +11,5 @@ export function createCacheStore(config) {
 async function createRedisCache(config) {
   const { getRedisClient, RedisCache } = await import('./redisBackend.js');
   const redis = await getRedisClient(config);
-  return new RedisCache(redis, config.string('storage.redis.key_prefix'));
+  return new RedisCache(redis, config.string('storage.redis.key_prefix'), config);
 }

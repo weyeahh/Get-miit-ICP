@@ -23,6 +23,46 @@ import { ResponseFormatter } from '../Support/responseFormatter.js';
 import { sleep } from '../Support/time.js';
 import { DomainNormalizer } from '../Validation/domainNormalizer.js';
 
+let cachedConfig = null;
+let cachedCacheStore = null;
+let cachedRateLimiter = null;
+let cachedLockProvider = null;
+
+function getConfig() {
+  if (cachedConfig === null) {
+    cachedConfig = new AppConfig();
+  }
+  return cachedConfig;
+}
+
+async function getCacheStore() {
+  if (cachedCacheStore === null) {
+    cachedCacheStore = await createCacheStore(getConfig());
+  }
+  return cachedCacheStore;
+}
+
+async function getRateLimiter() {
+  if (cachedRateLimiter === null) {
+    cachedRateLimiter = await createRateLimitStore(getConfig());
+  }
+  return cachedRateLimiter;
+}
+
+async function getLockProvider() {
+  if (cachedLockProvider === null) {
+    cachedLockProvider = await createLockProvider(getConfig());
+  }
+  return cachedLockProvider;
+}
+
+export function resetStores() {
+  cachedConfig = null;
+  cachedCacheStore = null;
+  cachedRateLimiter = null;
+  cachedLockProvider = null;
+}
+
 export async function handleQuery(request, response) {
   const rawDomain = queryParamLast(request.url, 'domain') ?? '';
   const ip = ClientIp.detect(request);
@@ -30,10 +70,9 @@ export async function handleQuery(request, response) {
   let mutex = null;
   let queryCache = null;
   let guard = null;
-  let config = null;
 
   try {
-    config = new AppConfig();
+    const config = getConfig();
     EnvironmentGuard.assertRuntimeReady();
     await EnvironmentGuard.assertSharpReady();
 
@@ -53,9 +92,9 @@ export async function handleQuery(request, response) {
     }
 
     const normalizer = new DomainNormalizer();
-    queryCache = new QueryCache(await createCacheStore(config), config);
-    guard = new QueryGuard(await createRateLimitStore(config), config);
-    const domainQueryLock = new DomainQueryLock(await createLockProvider(config));
+    queryCache = new QueryCache(await getCacheStore(), config);
+    guard = new QueryGuard(await getRateLimiter(), config);
+    const domainQueryLock = new DomainQueryLock(await getLockProvider());
     const debug = config.bool('debug.enabled');
 
     domain = normalizer.normalize(rawDomain);
@@ -105,7 +144,7 @@ export async function handleQuery(request, response) {
       domain,
       queryCache,
       guard,
-      config: config ?? new AppConfig(),
+      config: getConfig(),
     });
   } finally {
     if (mutex !== null) {
@@ -182,7 +221,7 @@ async function handleError(error, response, context) {
     await Logger.warning('request blocked by rate limiter', {
       ip: context.ip,
       domain: context.domain,
-      detail: DetailSanitizer.truncate(error.message, new AppConfig()),
+      detail: DetailSanitizer.truncate(error.message, context.config),
     });
 
     JsonResponse.send(response, {
@@ -200,7 +239,7 @@ async function handleError(error, response, context) {
       ip: context.ip,
       domain: context.domain,
       exception: error.name,
-      detail: DetailSanitizer.truncate(error.message, new AppConfig()),
+      detail: DetailSanitizer.truncate(error.message, context.config),
     });
 
     JsonResponse.send(response, {
@@ -224,7 +263,7 @@ async function handleError(error, response, context) {
         ip: context.ip,
         domain: context.domain,
         exception: guardError?.name ?? 'Error',
-        detail: DetailSanitizer.truncate(guardError?.message ?? '', new AppConfig()),
+        detail: DetailSanitizer.truncate(guardError?.message ?? '', context.config),
       });
     }
 
@@ -234,7 +273,7 @@ async function handleError(error, response, context) {
         await Logger.warning('returning stale cache due to upstream failure', {
           ip: context.ip,
           domain: context.domain,
-          detail: DetailSanitizer.truncate(error.message, new AppConfig()),
+          detail: DetailSanitizer.truncate(error.message, context.config),
         });
 
         JsonResponse.send(response, {
@@ -249,7 +288,7 @@ async function handleError(error, response, context) {
       ip: context.ip,
       domain: context.domain,
       exception: error.name,
-      detail: DetailSanitizer.truncate(error.message, new AppConfig()),
+      detail: DetailSanitizer.truncate(error.message, context.config),
     });
 
     JsonResponse.send(response, {
@@ -267,7 +306,7 @@ async function handleError(error, response, context) {
     ip: context.ip,
     domain: context.domain,
     exception: error?.name ?? 'Error',
-    detail: DetailSanitizer.truncate(error?.message ?? '', new AppConfig()),
+    detail: DetailSanitizer.truncate(error?.message ?? '', context.config),
   });
 
   JsonResponse.send(response, {

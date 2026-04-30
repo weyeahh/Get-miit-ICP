@@ -4,6 +4,8 @@ const ENV_MAP = new Map([
   ['MIIT_CACHE_SCHEMA_VERSION', 'cache.schema_version'],
   ['MIIT_CACHE_SUCCESS_TTL', 'cache.success_ttl'],
   ['MIIT_CACHE_MISS_TTL', 'cache.miss_ttl'],
+  ['MIIT_CACHE_SUCCESS_STALE_TTL', 'cache.success_stale_ttl'],
+  ['MIIT_CACHE_MISS_STALE_TTL', 'cache.miss_stale_ttl'],
   ['MIIT_RATE_LIMIT_GLOBAL_QPS', 'ratelimit.global_qps'],
   ['MIIT_RATE_LIMIT_IP_PER_MINUTE', 'ratelimit.ip_per_minute'],
   ['MIIT_RATE_LIMIT_DOMAIN_PER_WINDOW', 'ratelimit.domain_per_window'],
@@ -41,6 +43,10 @@ export class AppConfig {
         return clamp(value, 60, 604800);
       case 'cache.miss_ttl':
         return clamp(value, 30, 86400);
+      case 'cache.success_stale_ttl':
+        return clamp(value, 300, 2592000);
+      case 'cache.miss_stale_ttl':
+        return clamp(value, 60, 604800);
       case 'ratelimit.global_qps':
         return clamp(value, 1, 1000);
       case 'ratelimit.ip_per_minute':

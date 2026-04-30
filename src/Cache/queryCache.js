@@ -17,10 +17,16 @@ export class QueryCache {
   }
 
   async putSuccess(domain, detail) {
-    await this.cache.set(this.key('success', domain), {
+    const payload = {
       _schema_version: this.config.string('cache.schema_version'),
       detail,
-    }, this.config.int('cache.success_ttl'));
+    };
+    const ttl = this.config.int('cache.success_ttl');
+    if (typeof this.cache.setSuccess === 'function') {
+      await this.cache.setSuccess(this.key('success', domain), payload, ttl);
+    } else {
+      await this.cache.set(this.key('success', domain), payload, ttl);
+    }
   }
 
   async getMiss(domain) {
@@ -33,11 +39,17 @@ export class QueryCache {
   }
 
   async putMiss(domain) {
-    await this.cache.set(this.key('miss', domain), {
+    const payload = {
       _schema_version: this.config.string('cache.schema_version'),
       domain,
       cached: true,
-    }, this.config.int('cache.miss_ttl'));
+    };
+    const ttl = this.config.int('cache.miss_ttl');
+    if (typeof this.cache.setMiss === 'function') {
+      await this.cache.setMiss(this.key('miss', domain), payload, ttl);
+    } else {
+      await this.cache.set(this.key('miss', domain), payload, ttl);
+    }
   }
 
   async getStale(domain) {

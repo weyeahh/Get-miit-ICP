@@ -18,7 +18,7 @@
 3. 内置工信部接口请求头、Cookie 会话、鉴权流程。
 4. 保留滑块验证码识别能力，并将验证码选择逻辑重构为 challenge 级独立决策与显式候选排序。
 5. 增加 domain 规范化与基础格式校验。
-6. 增加全局、每 IP、每 domain 的文件限流与失败冷却。
+6. 增加全局、每 IP、每 domain 的文件限流与失败冷却；可选切换为 Redis 后端，支持分布式限流、缓存和互斥锁。
 7. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿上游。
 8. 增加成功缓存和空结果短缓存，减少重复请求上游。
 9. 错误对外脱敏，对内写入服务端日志。
@@ -199,6 +199,9 @@
 18. `src/Support/responseFormatter.js`
     负责最终成功响应封装，并显式校验详情必填字段存在性。
 
+19. `src/Storage/redisBackend.js`
+    Redis 存储后端实现，包含 `RedisCache`（带逻辑过期的双层 TTL 缓存）、`RedisRateLimiter`（基于 Lua 脚本的固定窗口原子限流）和 `RedisLockProvider`（带 watchdog 续期的分布式互斥锁）。Redis 客户端使用 Promise 单例模式避免并发初始化竞态，并注册 `error` 事件监听防止未捕获异常。通过 `closeRedisClient()` 支持优雅关闭。
+
 ## Requirements
 
 运行环境要求：
@@ -262,23 +265,25 @@ config/app.js
 1. `cache.schema_version`
 2. `cache.success_ttl`
 3. `cache.miss_ttl`
-4. `ratelimit.global_qps`
-5. `ratelimit.ip_per_minute`
-6. `ratelimit.domain_per_window`
-7. `ratelimit.domain_window_seconds`
-8. `ratelimit.domain_cooldown_seconds`
-9. `ratelimit.global_cooldown_seconds`
-10. `ratelimit.domain_wait_timeout_seconds`
-11. `ratelimit.domain_wait_interval_milliseconds`
-12. `debug.enabled`
-13. `debug.store_captcha_samples`
-14. `auth.api_key_enabled`
-15. `auth.api_key`
-16. `log.max_detail_length`
-17. `storage.backend`
-18. `storage.redis.url`
-19. `storage.redis.key_prefix`
-20. `storage.redis.connect_timeout`
+4. `cache.success_stale_ttl`
+5. `cache.miss_stale_ttl`
+6. `ratelimit.global_qps`
+7. `ratelimit.ip_per_minute`
+8. `ratelimit.domain_per_window`
+9. `ratelimit.domain_window_seconds`
+10. `ratelimit.domain_cooldown_seconds`
+11. `ratelimit.global_cooldown_seconds`
+12. `ratelimit.domain_wait_timeout_seconds`
+13. `ratelimit.domain_wait_interval_milliseconds`
+14. `debug.enabled`
+15. `debug.store_captcha_samples`
+16. `auth.api_key_enabled`
+17. `auth.api_key`
+18. `log.max_detail_length`
+19. `storage.backend`
+20. `storage.redis.url`
+21. `storage.redis.key_prefix`
+22. `storage.redis.connect_timeout`
 
 若环境变量和配置文件同时存在，环境变量优先级更高。
 
@@ -295,6 +300,15 @@ export default {
 
         // 空结果缓存时长，单位：秒。默认 1800，即 30 分钟。
         miss_ttl: 1800,
+
+        // 成功结果在 Redis 中的保留时长（含过期数据），单位：秒。默认 604800，即 7 天。
+        // 仅在 storage.backend=redis 时生效。Redis 键的实际 TTL 使用此值，
+        // 而逻辑过期由 success_ttl 控制。过期后数据仍可通过 stale 降级读取。
+        success_stale_ttl: 604800,
+
+        // 空结果在 Redis 中的保留时长（含过期数据），单位：秒。默认 86400，即 1 天。
+        // 仅在 storage.backend=redis 时生效。
+        miss_stale_ttl: 86400,
     },
 
     ratelimit: {
@@ -374,44 +388,50 @@ export default {
 3. `cache.miss_ttl`
    空结果缓存时长，单位为秒。默认 30 分钟。这个值不宜过长，否则会放大短期误判；也不宜过短，否则会反复打上游。
 
-4. `ratelimit.global_qps`
+4. `cache.success_stale_ttl`
+   成功结果在 Redis 中的实际保留时长（含过期数据），单位为秒。仅在 `storage.backend=redis` 时生效。默认 7 天。Redis 键的物理 TTL 使用此值，而逻辑过期判断使用 `success_ttl`。当上游不可用时，已过期但仍保留在 Redis 中的数据可作为降级响应返回，标记 `stale: true`。此值应大于 `success_ttl`，否则 stale 降级无法生效。
+
+5. `cache.miss_stale_ttl`
+   空结果在 Redis 中的实际保留时长（含过期数据），单位为秒。仅在 `storage.backend=redis` 时生效。默认 1 天。原理同 `success_stale_ttl`。
+
+6. `ratelimit.global_qps`
    控制整个服务每秒最多有多少个请求进入真实上游链路。这个值越小，对上游越安全，但峰值承载能力越弱。
 
-5. `ratelimit.ip_per_minute`
+7. `ratelimit.ip_per_minute`
    控制单个来源 IP 在一分钟内最多触发多少次真实上游查询。适合限制恶意刷接口或误操作放量。
 
-6. `ratelimit.domain_per_window`
+8. `ratelimit.domain_per_window`
    控制单个域名在限流窗口内可被查询的次数。适合防止热门 domain 或恶意 domain 被持续打上游。
 
-7. `ratelimit.domain_window_seconds`
+9. `ratelimit.domain_window_seconds`
    指定 domain 限流窗口的长度。它和 `domain_per_window` 共同决定了单域的查询密度。
 
-8. `ratelimit.domain_cooldown_seconds`
+10. `ratelimit.domain_cooldown_seconds`
    单域在上游失败后进入冷却状态的时长。上游疑似风控或验证码连续失败时，这个值可以适当加大。
 
-9. `ratelimit.global_cooldown_seconds`
+11. `ratelimit.global_cooldown_seconds`
    全局冷却时长。适合在上游明显异常时让整个服务短时间减速。
 
-10. `ratelimit.domain_wait_timeout_seconds`
-    singleflight 等待窗口。多个请求查询同一 domain 时，后续请求会等待已有查询写入缓存，而不是立即重复打上游。这个值过大可能占用 worker，过小则更容易直接返回 429。
+12. `ratelimit.domain_wait_timeout_seconds`
+   singleflight 等待窗口。多个请求查询同一 domain 时，后续请求会等待已有查询写入缓存，而不是立即重复打上游。这个值过大可能占用 worker，过小则更容易直接返回 429。
 
-11. `ratelimit.domain_wait_interval_milliseconds`
-    等待期间轮询缓存的间隔。间隔越小，结果命中更及时，但轮询更频繁；间隔越大，CPU 压力更低，但返回延迟更高。
+13. `ratelimit.domain_wait_interval_milliseconds`
+   等待期间轮询缓存的间隔。间隔越小，结果命中更及时，但轮询更频繁；间隔越大，CPU 压力更低，但返回延迟更高。
 
-12. `debug.enabled`
-    控制是否启用流程调试日志。启用后服务会将关键步骤日志写入 `storage/logs/`，并同步尝试输出到 stderr。生产环境通常建议保持 `false`，排查完成后应关闭。
+14. `debug.enabled`
+   控制是否启用流程调试日志。启用后服务会将关键步骤日志写入 `storage/logs/`，并同步尝试输出到 stderr。生产环境通常建议保持 `false`，排查完成后应关闭。
 
-13. `debug.store_captcha_samples`
-    控制在 `debug.enabled=true` 时是否额外保存验证码 challenge 样本。启用后服务会把当前 challenge 的 `big.png`、`small.png` 和 `metadata.json` 写入 `storage/debug/captcha/`，用于离线比对模板匹配、图像检测和最终候选排序。默认 `false`，因为它会产生额外磁盘写入并保留调试样本。
+15. `debug.store_captcha_samples`
+   控制在 `debug.enabled=true` 时是否额外保存验证码 challenge 样本。启用后服务会把当前 challenge 的 `big.png`、`small.png` 和 `metadata.json` 写入 `storage/debug/captcha/`，用于离线比对模板匹配、图像检测和最终候选排序。默认 `false`，因为它会产生额外磁盘写入并保留调试样本。
 
-14. `log.max_detail_length`
-    控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
+16. `log.max_detail_length`
+   控制异常详情写入日志前的最大长度。用于限制上游返回体过大时对日志系统的冲击。
 
-15. `auth.api_key_enabled`
-    控制是否开启 API key 鉴权。开启后每个请求必须在 `api_key` 查询参数或 `x-api-key` 请求头中提供密钥，值与 `auth.api_key` 匹配才能通过。查询参数和请求头同时存在时优先使用请求头。
+17. `auth.api_key_enabled`
+   控制是否开启 API key 鉴权。开启后每个请求必须在 `api_key` 查询参数或 `x-api-key` 请求头中提供密钥，值与 `auth.api_key` 匹配才能通过。查询参数和请求头同时存在时优先使用请求头。
 
-16. `auth.api_key`
-    API key 值。当 `auth.api_key_enabled` 为 `true` 时，请求的 `x-api-key` 头必须与此值完全一致。
+18. `auth.api_key`
+   API key 值。当 `auth.api_key_enabled` 为 `true` 时，请求的 `x-api-key` 头必须与此值完全一致。
 
 边界行为说明：
 
@@ -429,6 +449,8 @@ export default {
 
 ```text
 MIIT_CACHE_SUCCESS_TTL=43200
+MIIT_CACHE_SUCCESS_STALE_TTL=604800
+MIIT_CACHE_MISS_STALE_TTL=86400
 MIIT_RATE_LIMIT_GLOBAL_QPS=5
 MIIT_DEBUG_ENABLED=true
 MIIT_DEBUG_STORE_CAPTCHA_SAMPLES=true
@@ -665,7 +687,11 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 11. 日志系统是辅助能力，失败时不会反向影响主响应契约。
 12. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
 13. 当前 `EnvironmentGuardTest` 会真实调用 `EnvironmentGuard.assertRuntimeReady()`，根据当前环境中的 `https` 模块和 Node 版本断言预检行为。
-14. 服务支持 SIGTERM / SIGINT 优雅关闭；日志按日期轮转并自动清理 7 天前的文件；`storage/debug/captcha/` 最多保留 20 个样本目录，防止磁盘无限增长。
+14. 服务支持 SIGTERM / SIGINT 优雅关闭，关闭时会等待 HTTP 连接排空并断开 Redis 连接；日志按日期轮转并自动清理 7 天前的文件；`storage/debug/captcha/` 最多保留 20 个样本目录，防止磁盘无限增长。
+
+15. 请求处理管线中的 `AppConfig`、`CacheStore`、`RateLimiter`、`LockProvider` 使用模块级懒加载单例，避免每请求重复创建对象和重复执行配置解析。`handleError` 路径复用同一 `AppConfig` 实例，不再每次新建。
+
+16. HTTP 服务器设置了 30 秒请求超时、15 秒 header 超时和 10 秒 keep-alive 超时，防止慢客户端无限占用连接。
 
 ## Storage
 
@@ -688,6 +714,13 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 
 这些文件都是本地文件实现。当前默认实现适合单机部署；缓存、限流和锁模块均通过内部接口隔离，可替换为 Redis 等共享存储后端。
 
+当 `storage.backend` 设为 `redis` 时，缓存、限流和分布式锁均切换为 Redis 实现：
+
+- **缓存**：使用双层 TTL 策略。Redis 键的物理 TTL 为 `success_stale_ttl`（默认 7 天），逻辑过期由 `success_ttl`（默认 24 小时）控制。过期后数据仍保留在 Redis 中，上游故障时可作为 stale 降级响应返回。
+- **限流**：基于 Lua 脚本实现固定窗口原子计数，窗口对齐到 `floor(now/window)*window`，与文件限流器语义一致。支持 domain、全局 QPS 和 IP 三个维度的原子多规则消费。
+- **分布式锁**：使用 `SET NX PX` 实现互斥，TTL 60 秒，带 watchdog 定时续期（每 30 秒），`acquire()` 设 15 秒超时上限。释放使用 Lua 脚本保证仅释放自己持有的锁。
+- **连接管理**：Redis 客户端使用 Promise 单例模式，避免并发请求重复创建连接。注册 `error` 事件监听防止连接断开时未捕获异常。服务关闭时通过 `quit()` 优雅断开连接。`enableOfflineQueue=false` 防止 Redis 不可用时命令队列无限增长。
+
 项目默认通过 `.gitignore` 忽略 `storage/` 下的运行产物，并使用 `.gitkeep` 保留必要目录结构。
 
 测试目录中的缓存版本测试会写入 `storage/test-cache/`，并在测试结束后主动清理该目录中的文件和目录本身，降低测试对运行目录的污染。
@@ -700,9 +733,9 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 
 1. 如果工信部接口字段发生变化，服务可能失效。
 2. 如果验证码颜色、形状或返回数据结构改变，识别逻辑可能失效。
-3. 当前缓存、锁和频控默认基于本地文件实现，锁使用 `mkdir` 原子操作保证跨进程互斥。
+3. 当前缓存、锁和频控默认基于本地文件实现，锁使用 `mkdir` 原子操作保证跨进程互斥。可通过 `storage.backend=redis` 切换为 Redis 后端，支持分布式部署。
 4. 列表结果虽然增加了精确匹配、有效标识符优先和列表详情兜底，但仍受上游字段质量影响。
-5. 上游失败时会优先回放已过期的 stale cache 作为降级数据，标记 `stale: true`。
+5. 上游失败时会优先回放已过期的 stale cache 作为降级数据，标记 `stale: true`。在 Redis 模式下，通过双层 TTL 策略保证过期数据在 `success_stale_ttl` 时间窗口内仍可被降级读取。
 6. 同域 singleflight 当前是等待后回读缓存的模式，不是长轮询队列或作业系统。
 7. 仓库附带了 `package.json` 和基础测试骨架，测试使用 Node 内置 `node:test` 运行。
 8. 当前测试已覆盖域名规范化、环境预检行为、缓存版本、响应字段完整性、配置边界、`404` 可缓存标志、列表候选项选择、标识符字段变体、列表详情兜底，以及验证码偏移展开顺序规则，但仍不足以替代完整的并发、锁竞争和真实上游集成测试。

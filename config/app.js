@@ -3,6 +3,8 @@ export default {
     schema_version: 'v1',
     success_ttl: 86400,
     miss_ttl: 1800,
+    success_stale_ttl: 604800,
+    miss_stale_ttl: 86400,
   },
   ratelimit: {
     global_qps: 5,

@@ -4,7 +4,7 @@ import { JsonResponse } from './Http/jsonResponse.js';
 import { Logger } from './Support/logger.js';
 
 export function createApp() {
-  return http.createServer((request, response) => {
+  const server = http.createServer((request, response) => {
     handleQuery(request, response).catch(async (error) => {
       await Logger.error('unhandled application error', {
         exception: error?.name ?? 'Error',
@@ -23,4 +23,10 @@ export function createApp() {
       process.stderr.write(`${error?.stack ?? error}\n`);
     });
   });
+
+  server.timeout = 30000;
+  server.keepAliveTimeout = 10000;
+  server.headersTimeout = 15000;
+
+  return server;
 }
