@@ -2,14 +2,7 @@
 
 一个基于 Node.js 的 MIIT 备案查询服务，接收 `GET` 请求中的 `domain` 参数，返回工信部备案详细信息，适配了最新版工信部查询系统的滑块验证。
 
-本项目基于 [fuckmiit](https://github.com/Mxmilu666/fuckmiit) 编写，保留了原项目的核心思路，添加了更多的响应处理：
-
-1. 复刻工信部备案查询接口调用链路。
-2. 处理鉴权请求。
-3. 获取并求解滑块验证码。
-4. 查询备案列表并进一步获取备案详情。
-
-当前版本将原始 Go 库重构为更适合部署的 Node.js Web 服务形式，并在原始能力之上补充了输入校验、限流、缓存、错误脱敏、环境预检和失败冷却机制，以降低上游风控风险。
+部分思路来源于 [Mxmilu666/fuckmiit](https://github.com/Mxmilu666/fuckmiit)，本项目在此基础上进行了全面重构和扩展，补充了输入校验、限流、缓存、错误脱敏、环境预检和失败冷却等机制，以降低上游风控风险。
 
 ## Features
 
@@ -28,19 +21,6 @@
 13. 增加验证码候选置信度日志与可选样本落盘，便于离线比对真实 challenge。
 14. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
 15. 增加可选 API key 鉴权，可在配置中开启并要求请求通过 `api_key` 查询参数或 `x-api-key` 请求头提供密钥。
-
-## Project Origin
-
-本项目并非从零实现，核心协议分析与验证码处理思路来源于原项目：
-
-- [Mxmilu666/fuckmiit](https://github.com/Mxmilu666/fuckmiit)
-
-本仓库在其基础上进行了以下重构：
-
-1. 从 Go 库改造为 Node.js Web 服务。
-2. 按职责拆分为 `Api`、`Captcha`、`Service`、`Http`、`Cache`、`RateLimit`、`Validation`、`Config` 等模块。
-3. 增加统一的 HTTP 入口与 JSON 响应格式。
-4. 增加频控、singleflight、缓存、关键字段校验、错误分类、环境预检和错误脱敏。
 
 ## Project Structure
 
@@ -497,7 +477,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 
 ## Implementation Notes
 
-为了尽可能保持与原项目一致，当前 Node.js 版本沿用了原始实现的几个核心策略：
+当前版本沿用了以下几个核心策略：
 
 1. 使用固定请求头模拟浏览器环境。
 2. 使用 Cookie 持续维持服务端会话状态。
