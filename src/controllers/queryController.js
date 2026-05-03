@@ -171,7 +171,7 @@ async function sendCachedSuccess(respond, queryCache, domain) {
     return false;
   }
 
-  respond(ResponseFormatter.successPayload(cached.detail, { cache: 'hit', cached_at: cached.cached_at }));
+  respond(ResponseFormatter.successPayload(cached.detail, { cache: 'hit', cached_at: cached.cached_at, cache_expires_at: cached.cache_expires_at }));
   return true;
 }
 
@@ -186,6 +186,7 @@ async function sendCachedMiss(respond, queryCache, domain) {
     message: 'no ICP record found',
     cache: 'hit',
     cached_at: cached.cached_at,
+    cache_expires_at: cached.cache_expires_at,
     data: {
       domain,
       detail: `no ICP record found for ${domain}`,
@@ -288,7 +289,7 @@ async function handleError(error, respond, context) {
           detail: DetailSanitizer.truncate(error.message, context.config),
         });
 
-        const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit', cached_at: stale.cached_at });
+        const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit', cached_at: stale.cached_at, cache_expires_at: stale.cache_expires_at });
         respond({
           ...payload,
           data: { ...payload.data, stale: true },

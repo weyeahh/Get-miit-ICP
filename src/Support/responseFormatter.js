@@ -3,7 +3,7 @@ import { InternalErrorException } from '../Exception/miitException.js';
 const REQUIRED_FIELDS = ['domain', 'unitName', 'mainLicence', 'serviceLicence', 'natureName', 'leaderName', 'updateRecordTime'];
 
 export class ResponseFormatter {
-  static successPayload(detail, { cache = 'miss', cached_at = null } = {}) {
+  static successPayload(detail, { cache = 'miss', cached_at = null, cache_expires_at = null } = {}) {
     for (const field of REQUIRED_FIELDS) {
       if (typeof detail[field] !== 'string') {
         throw new InternalErrorException(`detail response missing required field: ${field}`, 'internal server error');
@@ -18,6 +18,10 @@ export class ResponseFormatter {
 
     if (cached_at !== null) {
       payload.cached_at = cached_at;
+    }
+
+    if (cache_expires_at !== null) {
+      payload.cache_expires_at = cache_expires_at;
     }
 
     payload.data = {
