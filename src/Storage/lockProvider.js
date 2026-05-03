@@ -18,6 +18,7 @@ class FileLockProvider {
   }
 
   async createMutex(resource) {
+    await AppPaths.ensureDir(this.directory);
     const lockPath = path.join(this.directory, `${sha1(resource)}.lock`);
     let lock = null;
 
