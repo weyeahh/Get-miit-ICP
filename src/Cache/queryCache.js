@@ -1,3 +1,5 @@
+import { localISOString } from '../Support/time.js';
+
 export class QueryCache {
   constructor(cache, config) {
     this.cache = cache;
@@ -22,7 +24,7 @@ export class QueryCache {
   async putSuccess(domain, detail) {
     const payload = {
       _schema_version: this.config.string('cache.schema_version'),
-      _cached_at: new Date().toISOString(),
+      _cached_at: localISOString(),
       detail,
     };
     const ttl = this.config.int('cache.success_ttl');
@@ -48,7 +50,7 @@ export class QueryCache {
   async putMiss(domain) {
     const payload = {
       _schema_version: this.config.string('cache.schema_version'),
-      _cached_at: new Date().toISOString(),
+      _cached_at: localISOString(),
       domain,
       cached: true,
     };

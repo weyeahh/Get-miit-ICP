@@ -28,3 +28,19 @@ export function formatLocalTimestampCompact(date = new Date()) {
 function pad2(value) {
   return String(value).padStart(2, '0');
 }
+
+export function localISOString(date = new Date()) {
+  const y = date.getFullYear();
+  const M = pad2(date.getMonth() + 1);
+  const d = pad2(date.getDate());
+  const H = pad2(date.getHours());
+  const m = pad2(date.getMinutes());
+  const s = pad2(date.getSeconds());
+  const ms = String(date.getMilliseconds()).padStart(3, '0');
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? '+' : '-';
+  const abs = Math.abs(offset);
+  const oh = pad2(Math.floor(abs / 60));
+  const om = pad2(abs % 60);
+  return `${y}-${M}-${d}T${H}:${m}:${s}.${ms}${sign}${oh}:${om}`;
+}
