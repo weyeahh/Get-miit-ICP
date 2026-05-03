@@ -66,10 +66,21 @@ export function resetStores() {
 export async function handleQuery(request, response) {
   const rawDomain = queryParamLast(request.url, 'domain') ?? '';
   const ip = ClientIp.detect(request);
+  const start = Date.now();
   let domain = '';
   let mutex = null;
   let queryCache = null;
   let guard = null;
+
+  const respond = (payload, status) => {
+    const duration = `${Date.now() - start}ms`;
+    if (payload !== null && typeof payload === 'object' && 'data' in payload) {
+      const { data, ...rest } = payload;
+      JsonResponse.send(response, { ...rest, duration, data }, status);
+    } else {
+      JsonResponse.send(response, { ...payload, duration }, status);
+    }
+  };
 
   try {
     const config = getConfig();
@@ -82,7 +93,7 @@ export async function handleQuery(request, response) {
       const queryKey = queryParamLast(request.url, 'api_key') ?? '';
       const requestKey = headerKey !== '' ? headerKey : queryKey;
       if (requestKey === '' || requestKey !== expectedKey) {
-        JsonResponse.send(response, {
+        respond({
           code: 401,
           message: 'unauthorized',
           data: { domain: '', detail: 'invalid or missing API key' },
@@ -99,10 +110,10 @@ export async function handleQuery(request, response) {
 
     domain = normalizer.normalize(rawDomain);
 
-    if (await sendCachedSuccess(response, queryCache, domain)) {
+    if (await sendCachedSuccess(respond, queryCache, domain)) {
       return;
     }
-    if (await sendCachedMiss(response, queryCache, domain)) {
+    if (await sendCachedMiss(respond, queryCache, domain)) {
       return;
     }
 
@@ -112,10 +123,10 @@ export async function handleQuery(request, response) {
       const interval = Math.max(50, config.int('ratelimit.domain_wait_interval_milliseconds'));
       while (Date.now() < deadline) {
         await sleep(interval);
-        if (await sendCachedSuccess(response, queryCache, domain)) {
+        if (await sendCachedSuccess(respond, queryCache, domain)) {
           return;
         }
-        if (await sendCachedMiss(response, queryCache, domain)) {
+        if (await sendCachedMiss(respond, queryCache, domain)) {
           return;
         }
       }
@@ -123,10 +134,10 @@ export async function handleQuery(request, response) {
       throw new RateLimitException('too many in-flight requests for the same domain', 'too many requests');
     }
 
-    if (await sendCachedSuccess(response, queryCache, domain)) {
+    if (await sendCachedSuccess(respond, queryCache, domain)) {
       return;
     }
-    if (await sendCachedMiss(response, queryCache, domain)) {
+    if (await sendCachedMiss(respond, queryCache, domain)) {
       return;
     }
 
@@ -137,9 +148,9 @@ export async function handleQuery(request, response) {
     const payload = ResponseFormatter.successPayload(detail);
     await queryCache.putSuccess(domain, detail);
 
-    JsonResponse.send(response, payload);
+    respond(payload);
   } catch (error) {
-    await handleError(error, response, {
+    await handleError(error, respond, {
       ip,
       domain,
       queryCache,
@@ -154,24 +165,23 @@ export async function handleQuery(request, response) {
   }
 }
 
-async function sendCachedSuccess(response, queryCache, domain) {
+async function sendCachedSuccess(respond, queryCache, domain) {
   const cached = await queryCache.getSuccess(domain);
   if (cached === null) {
     return false;
   }
 
-  const payload = ResponseFormatter.successPayload(cached.detail, { cache: 'hit', cached_at: cached.cached_at });
-  JsonResponse.send(response, payload);
+  respond(ResponseFormatter.successPayload(cached.detail, { cache: 'hit', cached_at: cached.cached_at }));
   return true;
 }
 
-async function sendCachedMiss(response, queryCache, domain) {
+async function sendCachedMiss(respond, queryCache, domain) {
   const cached = await queryCache.getMiss(domain);
   if (cached === null) {
     return false;
   }
 
-  JsonResponse.send(response, {
+  respond({
     code: 404,
     message: 'no ICP record found',
     cache: 'hit',
@@ -184,9 +194,9 @@ async function sendCachedMiss(response, queryCache, domain) {
   return true;
 }
 
-async function handleError(error, response, context) {
+async function handleError(error, respond, context) {
   if (error instanceof ValidationException) {
-    JsonResponse.send(response, {
+    respond({
       code: 400,
       message: error.userMessage(),
       data: null,
@@ -208,7 +218,7 @@ async function handleError(error, response, context) {
       }
     }
 
-    JsonResponse.send(response, {
+    respond({
       code: 404,
       message: 'no ICP record found',
       data: {
@@ -226,7 +236,7 @@ async function handleError(error, response, context) {
       detail: DetailSanitizer.truncate(error.message, context.config),
     });
 
-    JsonResponse.send(response, {
+    respond({
       code: 429,
       message: 'too many requests',
       data: {
@@ -244,7 +254,7 @@ async function handleError(error, response, context) {
       detail: DetailSanitizer.truncate(error.message, context.config),
     });
 
-    JsonResponse.send(response, {
+    respond({
       code: 500,
       message: 'service environment is not ready',
       data: {
@@ -279,7 +289,7 @@ async function handleError(error, response, context) {
         });
 
         const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit', cached_at: stale.cached_at });
-        JsonResponse.send(response, {
+        respond({
           ...payload,
           data: { ...payload.data, stale: true },
         });
@@ -294,7 +304,7 @@ async function handleError(error, response, context) {
       detail: DetailSanitizer.truncate(error.message, context.config),
     });
 
-    JsonResponse.send(response, {
+    respond({
       code: 500,
       message: 'upstream query failed',
       data: {
@@ -312,7 +322,7 @@ async function handleError(error, response, context) {
     detail: DetailSanitizer.truncate(error?.message ?? '', context.config),
   });
 
-  JsonResponse.send(response, {
+  respond({
     code: 500,
     message: 'internal server error',
     data: {
