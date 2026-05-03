@@ -15,7 +15,7 @@ test('query cache stores schema-versioned success payloads', async () => {
     await cache.putSuccess('example.com', { domain: 'example.com' });
     const value = await cache.getSuccess('example.com');
     assert.equal(value.detail.domain, 'example.com');
-    assert.equal(typeof value.cached_at, 'number');
+    assert.equal(typeof value.cached_at, 'string');
 
     const stale = new QueryCache(new FileCache(dir), new AppConfig({ 'cache.schema_version': 'test-v2' }));
     assert.equal(await stale.getSuccess('example.com'), null);

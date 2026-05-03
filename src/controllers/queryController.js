@@ -161,7 +161,7 @@ async function sendCachedSuccess(response, queryCache, domain) {
   }
 
   const payload = ResponseFormatter.successPayload(cached.detail, { cache: 'hit' });
-  payload.cached_at = new Date(cached.cached_at * 1000).toISOString();
+  payload.cached_at = cached.cached_at;
   JsonResponse.send(response, payload);
   return true;
 }
@@ -176,7 +176,7 @@ async function sendCachedMiss(response, queryCache, domain) {
     code: 404,
     message: 'no ICP record found',
     cache: 'hit',
-    cached_at: new Date(cached.cached_at * 1000).toISOString(),
+    cached_at: cached.cached_at,
     data: {
       domain,
       detail: `no ICP record found for ${domain}`,
@@ -280,7 +280,7 @@ async function handleError(error, response, context) {
         });
 
         const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit' });
-        payload.cached_at = new Date(stale.cached_at * 1000).toISOString();
+        payload.cached_at = stale.cached_at;
         JsonResponse.send(response, {
           ...payload,
           data: { ...payload.data, stale: true },
