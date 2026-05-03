@@ -321,10 +321,33 @@ Query Parameters:
 
 HTTP status: `200`
 
+实时查询（`cache` 为 `miss`）：
+
 ```json
 {
   "code": 200,
   "message": "successful",
+  "cache": "miss",
+  "data": {
+    "Domain": "baidu.com",
+    "UnitName": "北京百度网讯科技有限公司",
+    "MainLicence": "京ICP证030173号",
+    "ServiceLicence": "京ICP证030173号-1",
+    "NatureName": "企业",
+    "LeaderName": "李彦宏",
+    "UpdateRecordTime": "2026-01-01 00:00:00"
+  }
+}
+```
+
+命中缓存（`cache` 为 `hit`），额外返回 `cached_at` 表示缓存写入时间：
+
+```json
+{
+  "code": 200,
+  "message": "successful",
+  "cache": "hit",
+  "cached_at": "2026-05-03T12:00:00.000Z",
   "data": {
     "Domain": "baidu.com",
     "UnitName": "北京百度网讯科技有限公司",
@@ -437,6 +460,8 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 5. `natureName` -> `NatureName`
 6. `leaderName` -> `LeaderName`
 7. `updateRecordTime` -> `UpdateRecordTime`
+
+`cache` 字段位于响应顶层（与 `code`、`message`、`data` 同级），值为 `hit` 表示命中缓存，`miss` 表示实时查询。当 `cache` 为 `hit` 时，同级还会返回 `cached_at`（ISO 8601 格式），表示该缓存条目被写入的时间。
 
 ## Governance Strategy
 

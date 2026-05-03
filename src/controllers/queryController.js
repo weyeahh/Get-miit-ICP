@@ -155,28 +155,31 @@ export async function handleQuery(request, response) {
 }
 
 async function sendCachedSuccess(response, queryCache, domain) {
-  const cachedSuccess = await queryCache.getSuccess(domain);
-  if (cachedSuccess === null) {
+  const cached = await queryCache.getSuccess(domain);
+  if (cached === null) {
     return false;
   }
 
-  JsonResponse.send(response, ResponseFormatter.successPayload(cachedSuccess));
+  const payload = ResponseFormatter.successPayload(cached.detail, { cache: 'hit' });
+  payload.cached_at = new Date(cached.cached_at * 1000).toISOString();
+  JsonResponse.send(response, payload);
   return true;
 }
 
 async function sendCachedMiss(response, queryCache, domain) {
-  const cachedMiss = await queryCache.getMiss(domain);
-  if (cachedMiss === null) {
+  const cached = await queryCache.getMiss(domain);
+  if (cached === null) {
     return false;
   }
 
   JsonResponse.send(response, {
     code: 404,
     message: 'no ICP record found',
+    cache: 'hit',
+    cached_at: new Date(cached.cached_at * 1000).toISOString(),
     data: {
       domain,
       detail: `no ICP record found for ${domain}`,
-      cached: true,
     },
   }, 404);
   return true;
@@ -276,9 +279,11 @@ async function handleError(error, response, context) {
           detail: DetailSanitizer.truncate(error.message, context.config),
         });
 
+        const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit' });
+        payload.cached_at = new Date(stale.cached_at * 1000).toISOString();
         JsonResponse.send(response, {
-          ...ResponseFormatter.successPayload(stale),
-          data: { ...ResponseFormatter.successPayload(stale).data, stale: true },
+          ...payload,
+          data: { ...payload.data, stale: true },
         });
         return;
       }

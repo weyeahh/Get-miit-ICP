@@ -24,6 +24,7 @@ test('response formatter maps MIIT fields exactly', () => {
   assert.deepEqual(payload, {
     code: 200,
     message: 'successful',
+    cache: 'miss',
     data: {
       Domain: 'example.com',
       UnitName: 'Example Unit',

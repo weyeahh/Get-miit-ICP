@@ -1,3 +1,5 @@
+import { epochSeconds } from '../Support/time.js';
+
 export class QueryCache {
   constructor(cache, config) {
     this.cache = cache;
@@ -13,12 +15,16 @@ export class QueryCache {
       return null;
     }
     const detail = payload.detail;
-    return detail !== null && typeof detail === 'object' && !Array.isArray(detail) ? detail : null;
+    if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) {
+      return null;
+    }
+    return { detail, cached_at: payload._cached_at ?? 0 };
   }
 
   async putSuccess(domain, detail) {
     const payload = {
       _schema_version: this.config.string('cache.schema_version'),
+      _cached_at: epochSeconds(),
       detail,
     };
     const ttl = this.config.int('cache.success_ttl');
@@ -35,12 +41,16 @@ export class QueryCache {
       return null;
     }
 
-    return (payload._schema_version ?? '') === this.config.string('cache.schema_version') ? payload : null;
+    if ((payload._schema_version ?? '') !== this.config.string('cache.schema_version')) {
+      return null;
+    }
+    return { domain: payload.domain, cached_at: payload._cached_at ?? 0 };
   }
 
   async putMiss(domain) {
     const payload = {
       _schema_version: this.config.string('cache.schema_version'),
+      _cached_at: epochSeconds(),
       domain,
       cached: true,
     };
@@ -61,7 +71,10 @@ export class QueryCache {
       return null;
     }
     const detail = payload.detail;
-    return detail !== null && typeof detail === 'object' && !Array.isArray(detail) ? detail : null;
+    if (detail === null || typeof detail !== 'object' || Array.isArray(detail)) {
+      return null;
+    }
+    return { detail, cached_at: payload._cached_at ?? 0 };
   }
 
   key(prefix, domain) {
