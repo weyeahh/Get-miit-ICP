@@ -328,6 +328,7 @@ HTTP status: `200`
   "code": 200,
   "message": "successful",
   "cache": "miss",
+  "duration": "1523ms",
   "data": {
     "Domain": "baidu.com",
     "UnitName": "北京百度网讯科技有限公司",
@@ -340,14 +341,16 @@ HTTP status: `200`
 }
 ```
 
-命中缓存（`cache` 为 `hit`），额外返回 `cached_at` 表示缓存写入时间：
+命中缓存（`cache` 为 `hit`），额外返回 `cached_at` 和 `cache_expires_at`：
 
 ```json
 {
   "code": 200,
   "message": "successful",
   "cache": "hit",
-  "cached_at": "2026-05-03T12:00:00.000Z",
+  "cached_at": "2026-05-03T20:00:00.000+08:00",
+  "cache_expires_at": "2026-05-04T20:00:00.000+08:00",
+  "duration": "3ms",
   "data": {
     "Domain": "baidu.com",
     "UnitName": "北京百度网讯科技有限公司",
@@ -461,7 +464,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 6. `leaderName` -> `LeaderName`
 7. `updateRecordTime` -> `UpdateRecordTime`
 
-`cache` 字段位于响应顶层（与 `code`、`message`、`data` 同级），值为 `hit` 表示命中缓存，`miss` 表示实时查询。当 `cache` 为 `hit` 时，同级还会返回 `cached_at`（ISO 8601 格式），表示该缓存条目被写入的时间。
+`cache` 字段位于响应顶层（与 `code`、`message`、`data` 同级），值为 `hit` 表示命中缓存，`miss` 表示实时查询。当 `cache` 为 `hit` 时，同级还会返回 `cached_at`（ISO 8601 北京时间），表示缓存写入时间；`cache_expires_at` 表示缓存过期时间。`duration` 为查询耗时（毫秒），所有响应均包含。
 
 ## Governance Strategy
 
