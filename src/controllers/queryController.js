@@ -160,8 +160,7 @@ async function sendCachedSuccess(response, queryCache, domain) {
     return false;
   }
 
-  const payload = ResponseFormatter.successPayload(cached.detail, { cache: 'hit' });
-  payload.cached_at = cached.cached_at;
+  const payload = ResponseFormatter.successPayload(cached.detail, { cache: 'hit', cached_at: cached.cached_at });
   JsonResponse.send(response, payload);
   return true;
 }
@@ -279,8 +278,7 @@ async function handleError(error, response, context) {
           detail: DetailSanitizer.truncate(error.message, context.config),
         });
 
-        const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit' });
-        payload.cached_at = stale.cached_at;
+        const payload = ResponseFormatter.successPayload(stale.detail, { cache: 'hit', cached_at: stale.cached_at });
         JsonResponse.send(response, {
           ...payload,
           data: { ...payload.data, stale: true },
