@@ -80,6 +80,11 @@ export async function handleQuery(request, response) {
     } else {
       JsonResponse.send(response, { ...payload, duration }, status);
     }
+
+    const code = payload?.code ?? 200;
+    const cache = payload?.cache ?? '-';
+    const httpStatus = status ?? 200;
+    process.stdout.write(`[${new Date().toISOString()}] ${ip} ${domain || '-'} ${httpStatus} ${code} ${cache} ${duration}\n`);
   };
 
   try {
