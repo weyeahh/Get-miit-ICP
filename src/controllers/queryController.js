@@ -20,7 +20,7 @@ import { DetailSanitizer } from '../Support/detailSanitizer.js';
 import { EnvironmentGuard } from '../Support/environmentGuard.js';
 import { Logger } from '../Support/logger.js';
 import { ResponseFormatter } from '../Support/responseFormatter.js';
-import { sleep } from '../Support/time.js';
+import { localISOString, sleep } from '../Support/time.js';
 import { DomainNormalizer } from '../Validation/domainNormalizer.js';
 
 let cachedConfig = null;
@@ -84,7 +84,7 @@ export async function handleQuery(request, response) {
     const code = payload?.code ?? 200;
     const cache = payload?.cache ?? '-';
     const httpStatus = status ?? 200;
-    process.stdout.write(`[${new Date().toISOString()}] ${ip} ${domain || '-'} ${httpStatus} ${code} ${cache} ${duration}\n`);
+    process.stdout.write(`[${localISOString()}] ${ip} ${domain || '-'} ${httpStatus} ${code} ${cache} ${duration}\n`);
   };
 
   try {
