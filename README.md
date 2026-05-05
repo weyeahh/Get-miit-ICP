@@ -6,7 +6,7 @@
 
 ## Features
 
-1. 基于 HTTP GET 的简单调用方式。
+1. 基于 HTTP GET 的简单调用方式，支持 `domain`、`unitName`、`licence` 三种查询参数。
 2. 纯 Node.js 实现，仅依赖 `sharp` 用于图像解码。
 3. 内置工信部接口请求头、Cookie 会话、鉴权流程。
 4. 保留滑块验证码识别能力，并将验证码选择逻辑重构为 challenge 级独立决策与显式候选排序。
@@ -14,13 +14,16 @@
 6. 增加全局、每 IP、每 domain 的文件限流与失败冷却；可选切换为 Redis 后端，支持分布式限流、缓存和互斥锁。
 7. 增加同域 singleflight 查询锁，避免缓存未命中时并发击穿上游。
 8. 增加成功缓存和空结果短缓存，减少重复请求上游。
-9. 错误对外脱敏，对内写入服务端日志。
-10. 日志写入采用 best-effort 策略，日志失败不会破坏 API 响应。
-11. 将用户可调参数迁移到内置默认配置，支持通过 `.env` 环境变量覆盖。
-12. 增加 queryByCondition 候选项诊断、标识符字段变体兼容和列表详情兜底。
-13. 增加验证码候选置信度日志与可选样本落盘，便于离线比对真实 challenge。
-14. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
-15. 增加可选 API key 鉴权，可在配置中开启并要求请求通过 `api_key` 查询参数或 `x-api-key` 请求头提供密钥。
+9. 三种查询方式（domain/unitName/licence）的缓存互通：list 查询结果自动填充 domain 缓存，unitName 和 licence 结果互相写入对方缓存 key。
+10. 错误对外脱敏，对内写入服务端日志。
+11. 日志写入采用 best-effort 策略，日志失败不会破坏 API 响应。
+12. 将用户可调参数迁移到内置默认配置，支持通过 `.env` 环境变量覆盖。
+13. 增加 queryByCondition 候选项诊断、标识符字段变体兼容和列表详情兜底。
+14. 增加验证码候选置信度日志与可选样本落盘，便于离线比对真实 challenge。
+15. 增加缓存 schema version、响应编码保护、错误分类、环境预检与基础测试骨架。
+16. 增加可选 API key 鉴权，可在配置中开启并要求请求通过 `api_key` 查询参数或 `x-api-key` 请求头提供密钥。
+17. 响应中包含 `cache`（hit/miss）、`duration`（耗时）、`cached_at`（缓存时间）、`cache_expires_at`（过期时间）等状态字段。
+18. 每条请求自动输出 access log 到终端（stdout），格式为北京时间。
 
 ## Project Structure
 
@@ -65,7 +68,7 @@
 |  |  |- detailSanitizer.js
 |  |  |- environmentGuard.js
 |  |  |- fileLock.js
-|  |  |- fileMutex.js
+|  |  |- fileStoreUtils.js
 |  |  |- hash.js
 |  |  |- logger.js
 |  |  |- responseFormatter.js
@@ -100,13 +103,15 @@
 
 项目执行链路如下：
 
-1. 客户端发起请求：`GET /?domain=example.com`
+1. 客户端发起请求：`GET /?domain=example.com`（或 `?unitName=xxx`、`?licence=xxx`）
 2. `src/app.js` 创建 HTTP server，`src/controllers/queryController.js` 处理请求
 3. `EnvironmentGuard` 在入口阶段检查 `https`、`JSON` 和 Node 版本是否可用
-4. `DomainNormalizer` 执行域名规范化与校验
+4. 根据参数类型分流：
+   - **domain 查询**：`DomainNormalizer` 执行域名规范化与校验，然后执行步骤 5–19
+   - **unitName/licence 查询**：执行 `MiitQueryService.queryList()`，流程类似步骤 5–13，但返回完整列表而非单条详情；查询成功后自动将结果写入 `list:{unitName}` 和 `list:{mainLicence}` 缓存，并逐条填充 `success:{domain}` 缓存
 5. `QueryCache` 优先命中成功缓存或空结果缓存
-6. `DomainQueryLock` 为同一 domain 提供 singleflight 查询锁
-7. 获取 domain 锁成功后再次读取缓存，避免锁等待后的重复上游查询
+6. `DomainQueryLock` 为同一 domain/singleflight key 提供查询锁
+7. 获取锁成功后再次读取缓存，避免锁等待后的重复上游查询
 8. 只有真正准备访问上游时，`QueryGuard` 才执行全局、IP、domain 频控与冷却判断
 9. `MiitQueryService` 执行完整查询流程
 10. `AuthApi` 请求 `/auth` 获取 `Token`（含指数退避重试）
@@ -119,6 +124,7 @@
 17. `ResponseFormatter` 在真正写成功缓存前再次校验详情字段完整性
 18. 成功结果进入带 schema version 的缓存并返回
 19. 失败按异常类型分类，分别映射为参数错误、频控错误、存储错误、环境错误、上游错误或内部错误
+20. 每条请求通过 `respond` 闭包自动输出 access log 到终端（stdout），包含 IP、查询关键字、HTTP 状态、业务码、缓存状态和耗时
 
 ### Module Responsibilities
 
@@ -141,10 +147,13 @@
    负责同一 domain 查询过程的 singleflight 控制。
 
 7. `src/Cache/queryCache.js`
-   负责成功缓存与空结果缓存，并通过 schema version 隔离未来结构变化。
+   负责成功缓存、空结果缓存和列表缓存，通过 schema version 隔离未来结构变化。提供 getSuccess/putSuccess、getMiss/putMiss、getList/putList 和 getStale 方法，内部复用 getDetail/putDetail 公共逻辑。
 
 8. `src/Cache/fileCache.js`
-   负责缓存文件的加锁读取、完整性校验写入和带锁轻量级过期清理。
+   负责缓存文件的加锁读取、完整性校验写入和带锁轻量级过期清理。继承 `FileStoreBase`。
+
+9. `src/Support/fileStoreUtils.js`
+   文件存储基类，为 `FileCache` 和 `FileRateLimiter` 提供共享的 `ensureDir`（带缓存）、`fileForKey`、`lockForFile`、`readJson`、`writeJson`、`removeExpired` 方法，消除重复代码。
 
 9. `src/Api/miitClient.js`
    通用 HTTPS 客户端，维护请求头、Cookie、超时控制和上游错误截断。
@@ -543,6 +552,9 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 31. `ResponseFormatter` 会校验必填详情字段，不再用空字符串静默吞掉字段缺失；同时先格式化、后写成功缓存，避免不可渲染数据进入 success cache。
 32. storage 目录在运行时会校验可创建、可写，避免限流与缓存静默失效。
 33. 初始化阶段异常也会进入统一 JSON 错误出口，避免 API 返回非 JSON 错误页。
+34. unitName/licence 列表查询复用 domain 查询的全部保护措施：IP + 全局限流（QueryGuard）、成功缓存（`list:{keyword}`）、singleflight 锁（DomainQueryLock）、等待锁期间轮询缓存。
+35. list 查询成功后自动将结果写入 `list:{unitName}` 和 `list:{mainLicence}` 两个缓存 key，并逐条填充 `success:{domain}` 缓存；后续 domain 查询直接命中缓存，无需验证码和上游请求。
+36. 每条请求通过 `respond` 闭包自动向终端（stdout）输出 access log，格式为 `[ISO北京时间] IP 查询关键字 HTTP状态 业务码 缓存状态 耗时`。
 
 ## Implementation Notes
 
@@ -572,7 +584,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 项目会在运行时自动创建 `storage/` 目录，用于：
 
 1. `storage/cache/`
-   保存成功缓存和空结果缓存。
+   保存成功缓存、空结果缓存和列表缓存。文件名为 SHA1 哈希，通过 schema version 前缀隔离。list 查询结果会自动填充 domain 缓存（`success:{domain}`），unitName 和 licence 查询结果互相写入对方缓存 key（`list:{unitName}` ↔ `list:{mainLicence}`）。
 
 2. `storage/ratelimit/`
    保存频控窗口与冷却状态。
