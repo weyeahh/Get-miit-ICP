@@ -153,6 +153,24 @@ export async function handleQuery(request, response) {
         const service = new MiitQueryService();
         const result = await service.queryList(keyword, debug);
         await queryCache.putList(cacheKey, result);
+
+        if (Array.isArray(result.records)) {
+          for (const record of result.records) {
+            const detail = {
+              domain: record.domain,
+              unitName: record.unitName,
+              mainLicence: record.mainLicence,
+              serviceLicence: record.serviceLicence,
+              natureName: record.natureName,
+              leaderName: record.leaderName,
+              updateRecordTime: record.updateRecordTime,
+            };
+            if (detail.domain && detail.unitName) {
+              await queryCache.putSuccess(detail.domain, detail).catch(() => {});
+            }
+          }
+        }
+
         respond(ResponseFormatter.listPayload(result));
       } finally {
         await mutex.release();

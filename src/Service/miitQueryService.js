@@ -248,10 +248,7 @@ export class MiitQueryService {
       leaderName: first.leaderName,
       updateRecordTime: first.updateRecordTime,
       total: records.length,
-      records: records.map((r) => ({
-        domain: r.domain,
-        serviceLicence: r.serviceLicence,
-      })),
+      records,
     };
   }
 
