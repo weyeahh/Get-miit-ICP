@@ -117,6 +117,10 @@ export class RedisCache {
   async setMiss(key, value, ttlSeconds) {
     await this.set(key, value, ttlSeconds, this.staleMissTtl);
   }
+
+  async setList(key, value, ttlSeconds) {
+    await this.set(key, value, ttlSeconds, this.staleSuccessTtl);
+  }
 }
 
 const RATE_LIMIT_LUA = `

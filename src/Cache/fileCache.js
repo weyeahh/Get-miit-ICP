@@ -10,27 +10,27 @@ import { StorageException } from '../Exception/miitException.js';
 export class FileCache {
   constructor(directory = null) {
     this.directory = directory ?? AppPaths.storagePath('cache');
+    this.dirEnsured = false;
     this.gcRunning = false;
   }
 
   async get(key) {
-    await this.gc();
-    await AppPaths.ensureDir(this.directory, true);
+    await this.ensureDir();
     const file = this.fileForKey(key);
     const payload = await this.readPayload(file, true);
     return payload?.value !== null && typeof payload?.value === 'object' && !Array.isArray(payload.value) ? payload.value : null;
   }
 
   async getStale(key) {
-    await AppPaths.ensureDir(this.directory, true);
+    await this.ensureDir();
     const file = this.fileForKey(key);
     const payload = await this.readPayload(file, false);
     return payload?.value !== null && typeof payload?.value === 'object' && !Array.isArray(payload.value) ? payload.value : null;
   }
 
   async set(key, value, ttlSeconds) {
+    await this.ensureDir();
     await this.gc();
-    await AppPaths.ensureDir(this.directory, true);
     const file = this.fileForKey(key);
     const payload = {
       expires_at: epochSeconds() + Math.max(1, ttlSeconds),
@@ -49,6 +49,13 @@ export class FileCache {
       await writeAtomic(file, json);
     } finally {
       await lock.release();
+    }
+  }
+
+  async ensureDir() {
+    if (!this.dirEnsured) {
+      await AppPaths.ensureDir(this.directory, true);
+      this.dirEnsured = true;
     }
   }
 
@@ -102,7 +109,6 @@ export class FileCache {
 
     this.gcRunning = true;
     try {
-      await AppPaths.ensureDir(this.directory, true);
       const { readdir } = await import('node:fs/promises');
       const now = epochSeconds();
       const entries = await readdir(this.directory, { withFileTypes: true });

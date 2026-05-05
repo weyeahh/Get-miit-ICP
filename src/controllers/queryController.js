@@ -155,16 +155,16 @@ export async function handleQuery(request, response) {
         await queryCache.putList(cacheKey, result);
 
         if (result.unitName && result.mainLicence) {
-          const altKey = cacheKey.startsWith('list:') && cacheKey === `list:${result.unitName}`
-            ? `list:${result.mainLicence}`
-            : `list:${result.unitName}`;
+          const altKey = `list:${cacheKey === `list:${result.unitName}` ? result.mainLicence : result.unitName}`;
           if (altKey !== cacheKey) {
-            await queryCache.putList(altKey, result).catch(() => {});
+            await queryCache.putList(altKey, result).catch((err) => {
+              Logger.error('failed to write alt list cache', { detail: err?.message ?? '' }).catch(() => {});
+            });
           }
         }
 
         if (Array.isArray(result.records)) {
-          for (const record of result.records) {
+          await Promise.all(result.records.map((record) => {
             const detail = {
               domain: record.domain,
               unitName: record.unitName,
@@ -174,10 +174,10 @@ export async function handleQuery(request, response) {
               leaderName: record.leaderName,
               updateRecordTime: record.updateRecordTime,
             };
-            if (detail.domain && detail.unitName) {
-              await queryCache.putSuccess(detail.domain, detail).catch(() => {});
-            }
-          }
+            return detail.domain && detail.unitName
+              ? queryCache.putSuccess(detail.domain, detail).catch(() => {})
+              : Promise.resolve();
+          }));
         }
 
         respond(ResponseFormatter.listPayload(result));
