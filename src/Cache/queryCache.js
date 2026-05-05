@@ -81,6 +81,37 @@ export class QueryCache {
     return { detail, cached_at: payload._cached_at ?? '', cache_expires_at: payload._cache_expires_at ?? '' };
   }
 
+  async getList(key) {
+    const payload = await this.cache.get(this.key('list', key));
+    if (payload === null) {
+      return null;
+    }
+    if ((payload._schema_version ?? '') !== this.config.string('cache.schema_version')) {
+      return null;
+    }
+    const detail = payload.detail;
+    if (detail === null || typeof detail !== 'object') {
+      return null;
+    }
+    return { detail, cached_at: payload._cached_at ?? '', cache_expires_at: payload._cache_expires_at ?? '' };
+  }
+
+  async putList(key, detail) {
+    const ttl = this.config.int('cache.success_ttl');
+    const now = new Date();
+    const payload = {
+      _schema_version: this.config.string('cache.schema_version'),
+      _cached_at: localISOString(now),
+      _cache_expires_at: localISOString(new Date(now.getTime() + ttl * 1000)),
+      detail,
+    };
+    if (typeof this.cache.setSuccess === 'function') {
+      await this.cache.setSuccess(this.key('list', key), payload, ttl);
+    } else {
+      await this.cache.set(this.key('list', key), payload, ttl);
+    }
+  }
+
   key(prefix, domain) {
     return `${prefix}:${this.config.string('cache.schema_version')}:${domain}`;
   }

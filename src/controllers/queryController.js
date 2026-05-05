@@ -114,12 +114,49 @@ export async function handleQuery(request, response) {
 
     if (rawUnitName !== '' || rawLicence !== '') {
       const keyword = rawUnitName || rawLicence;
+      queryCache = new QueryCache(await getCacheStore(), config);
       guard = new QueryGuard(await getRateLimiter(), config);
-      await guard.assertAllowed(ip, keyword);
+      const domainQueryLock = new DomainQueryLock(await getLockProvider());
+      const cacheKey = `list:${keyword}`;
 
-      const service = new MiitQueryService();
-      const result = await service.queryList(keyword, debug);
-      respond(ResponseFormatter.listPayload(result));
+      const cachedList = await queryCache.getList(cacheKey);
+      if (cachedList !== null) {
+        respond(ResponseFormatter.listPayload(cachedList.detail, { cache: 'hit', cached_at: cachedList.cached_at, cache_expires_at: cachedList.cache_expires_at }));
+        return;
+      }
+
+      const mutex = await domainQueryLock.mutexFor(cacheKey);
+      if (!(await mutex.tryAcquire())) {
+        const deadline = Date.now() + config.int('ratelimit.domain_wait_timeout_seconds') * 1000;
+        const interval = Math.max(50, config.int('ratelimit.domain_wait_interval_milliseconds'));
+        while (Date.now() < deadline) {
+          await sleep(interval);
+          const cachedListRetry = await queryCache.getList(cacheKey);
+          if (cachedListRetry !== null) {
+            respond(ResponseFormatter.listPayload(cachedListRetry.detail, { cache: 'hit', cached_at: cachedListRetry.cached_at, cache_expires_at: cachedListRetry.cache_expires_at }));
+            return;
+          }
+        }
+
+        throw new RateLimitException('too many in-flight requests for the same query', 'too many requests');
+      }
+
+      try {
+        const cachedListAfterLock = await queryCache.getList(cacheKey);
+        if (cachedListAfterLock !== null) {
+          respond(ResponseFormatter.listPayload(cachedListAfterLock.detail, { cache: 'hit', cached_at: cachedListAfterLock.cached_at, cache_expires_at: cachedListAfterLock.cache_expires_at }));
+          return;
+        }
+
+        await guard.assertAllowed(ip, keyword);
+
+        const service = new MiitQueryService();
+        const result = await service.queryList(keyword, debug);
+        await queryCache.putList(cacheKey, result);
+        respond(ResponseFormatter.listPayload(result));
+      } finally {
+        await mutex.release();
+      }
       return;
     }
 
