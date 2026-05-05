@@ -154,6 +154,15 @@ export async function handleQuery(request, response) {
         const result = await service.queryList(keyword, debug);
         await queryCache.putList(cacheKey, result);
 
+        if (result.unitName && result.mainLicence) {
+          const altKey = cacheKey.startsWith('list:') && cacheKey === `list:${result.unitName}`
+            ? `list:${result.mainLicence}`
+            : `list:${result.unitName}`;
+          if (altKey !== cacheKey) {
+            await queryCache.putList(altKey, result).catch(() => {});
+          }
+        }
+
         if (Array.isArray(result.records)) {
           for (const record of result.records) {
             const detail = {
