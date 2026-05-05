@@ -392,8 +392,14 @@ async function handleError(error, respond, context) {
 
 function queryParamLast(requestUrl, name) {
   const url = new URL(requestUrl, 'http://localhost');
-  const values = url.searchParams.getAll(name);
-  return values.length === 0 ? null : values[values.length - 1];
+  const lowerName = name.toLowerCase();
+  let lastValue = null;
+  for (const [key, value] of url.searchParams.entries()) {
+    if (key.toLowerCase() === lowerName) {
+      lastValue = value;
+    }
+  }
+  return lastValue;
 }
 
 function readHeader(request, name) {
