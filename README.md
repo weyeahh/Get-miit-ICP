@@ -502,7 +502,9 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 
 ## Response Field Mapping
 
-当前 `data` 字段基于工信部详情接口响应中的 `params` 进行映射：
+### domain 查询
+
+`data` 字段基于工信部详情接口响应中的 `params` 进行映射：
 
 1. `domain` -> `Domain`
 2. `unitName` -> `UnitName`
@@ -511,6 +513,20 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 5. `natureName` -> `NatureName`
 6. `leaderName` -> `LeaderName`
 7. `updateRecordTime` -> `UpdateRecordTime`
+
+### unitName / licence 查询
+
+`data` 字段包含主体公共信息和域名列表：
+
+1. `unitName` -> `UnitName`（主体名）
+2. `mainLicence` -> `MainLicence`（主体备案号）
+3. `natureName` -> `NatureName`（主体性质）
+4. `leaderName` -> `LeaderName`（负责人）
+5. `updateRecordTime` -> `UpdateRecordTime`（最近更新时间）
+6. `total` -> `Total`（域名总数）
+7. `records` -> `Records`（域名列表，每条包含 `domain` 和 `serviceLicence`）
+
+### 通用顶层字段
 
 `cache` 字段位于响应顶层（与 `code`、`message`、`data` 同级），值为 `hit` 表示命中缓存，`miss` 表示实时查询。当 `cache` 为 `hit` 时，同级还会返回 `cached_at`（ISO 8601 北京时间），表示缓存写入时间；`cache_expires_at` 表示缓存过期时间。`duration` 为查询耗时（毫秒），所有响应均包含。
 
