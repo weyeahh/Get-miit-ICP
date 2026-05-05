@@ -163,6 +163,98 @@ export class MiitQueryService {
     throw new UpstreamException(`detail response missing required fields; keys=${this.keysOf(detail).join(',')}`, 'upstream query failed');
   }
 
+  async queryList(keyword, debug = false) {
+    keyword = String(keyword).trim();
+    if (keyword === '') {
+      throw new MiitException('keyword is required');
+    }
+
+    const timestamp = epochSeconds();
+    const client = new MiitClient(this.timeout);
+    const authApi = new AuthApi(client);
+    const captchaApi = new CaptchaApi(client);
+    const icpApi = new IcpApi(client);
+    const solver = new CaptchaSolver(client, captchaApi);
+
+    await Debug.log(debug, `step=auth timestamp=${timestamp}`);
+    const authResponse = await this.retryUpstream(() => authApi.auth(timestamp));
+    await Debug.log(debug, `step=auth success=true expire=${String(authResponse.params?.expire ?? '')}`);
+
+    const clientUid = CaptchaApi.newClientUid();
+    await Debug.log(debug, `step=getCheckImagePoint clientUid=${clientUid}`);
+
+    const challenge = await this.retryUpstream(() => captchaApi.getCheckImagePoint(clientUid));
+    const params = challenge.params !== null && typeof challenge.params === 'object' ? challenge.params : {};
+    const captchaUuid = String(params.uuid ?? '');
+    const bigImage = String(params.bigImage ?? '');
+    const smallImage = String(params.smallImage ?? '');
+    const height = phpInt(params.height, -1);
+    if (captchaUuid === '' || bigImage === '' || height < 0) {
+      throw new UpstreamException('captcha challenge params missing', 'upstream query failed');
+    }
+
+    await Debug.log(debug, `step=getCheckImagePoint success=true captchaUUID=${captchaUuid} height=${height}`);
+
+    const solved = await solver.solve(captchaUuid, bigImage, smallImage, height, debug);
+    const checkResponse = solved.response;
+    const solvedUuid = String(solved.solvedUuid ?? captchaUuid);
+    const sign = String(checkResponse.params ?? '');
+    if (sign === '') {
+      throw new UpstreamException('checkImage response missing sign', 'upstream query failed');
+    }
+
+    client.setSign(sign);
+    client.setUuid(solvedUuid);
+
+    await Debug.log(debug, `step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=${keyword} serviceType=1`);
+    const queryResponse = await this.retryUpstream(() => icpApi.queryByCondition(keyword));
+    if ((queryResponse.success ?? false) !== true || (queryResponse.code ?? 0) !== 200) {
+      throw new UpstreamException(`queryByCondition rejected: code=${String(queryResponse.code ?? '')} msg=${String(queryResponse.msg ?? '')}`, 'upstream query failed');
+    }
+
+    const queryParams = queryResponse.params !== null && typeof queryResponse.params === 'object' && !Array.isArray(queryResponse.params) ? queryResponse.params : {};
+    const list = Array.isArray(queryParams.list) ? queryParams.list : [];
+    if (list.length === 0) {
+      throw new RecordNotFoundException(`no ICP record found for ${keyword}`);
+    }
+
+    await Debug.log(debug, 'step=queryByCondition success=true', {
+      params_keys: this.keysOf(queryParams),
+      list_count: list.length,
+    });
+
+    const records = [];
+    for (const item of list) {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
+      const record = {};
+      for (const field of DETAIL_FIELDS) {
+        const value = item[field];
+        record[field] = value !== null && value !== undefined ? String(value).trim() : '';
+      }
+      records.push(record);
+    }
+
+    if (records.length === 0) {
+      throw new RecordNotFoundException(`no valid ICP records found for ${keyword}`);
+    }
+
+    const first = records[0];
+    return {
+      unitName: first.unitName,
+      mainLicence: first.mainLicence,
+      natureName: first.natureName,
+      leaderName: first.leaderName,
+      updateRecordTime: first.updateRecordTime,
+      total: records.length,
+      records: records.map((r) => ({
+        domain: r.domain,
+        serviceLicence: r.serviceLicence,
+      })),
+    };
+  }
+
   async selectBestMatch(list, domain, debug = false) {
     let fallback = null;
     let matchedCount = 0;

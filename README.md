@@ -312,12 +312,22 @@ Method:
 GET /
 ```
 
-Query Parameters:
+Query Parameters（三选一）：
 
-1. `domain` required
+1. `domain`
    要查询的域名。系统会自动执行规范化与格式校验。
 
+2. `unitName`
+   按主体名（公司/组织全称）精确查询该主体下的所有备案域名/APP 信息。
+
+3. `licence`
+   按备案号查询（如 `粤ICP备2025407341号`），返回该备案号下的所有域名信息。
+
+三个参数互斥，优先级为 `unitName` > `licence` > `domain`。
+
 ### Success Response
+
+#### domain 查询
 
 HTTP status: `200`
 
@@ -362,6 +372,35 @@ HTTP status: `200`
   }
 }
 ```
+
+#### unitName / licence 查询
+
+HTTP status: `200`
+
+```json
+{
+  "code": 200,
+  "message": "successful",
+  "cache": "miss",
+  "duration": "1523ms",
+  "data": {
+    "UnitName": "东莞市云上望远网络科技有限公司",
+    "MainLicence": "粤ICP备2025407341号",
+    "NatureName": "企业",
+    "LeaderName": "",
+    "UpdateRecordTime": "2025-09-01 08:57:56",
+    "Total": 8,
+    "Records": [
+      { "domain": "yunvon.cn", "serviceLicence": "粤ICP备2025407341号-1" },
+      { "domain": "yunvon.com", "serviceLicence": "粤ICP备2025407341号-4" },
+      { "domain": "uciu.cn", "serviceLicence": "粤ICP备2025407341号-6" },
+      { "domain": "iusi.cn", "serviceLicence": "粤ICP备2025407341号-2" }
+    ]
+  }
+}
+```
+
+`data` 中 `UnitName`、`MainLicence` 等为主体公共信息，`Records` 为该主体下所有域名列表，每条包含 `domain` 和 `serviceLicence`。
 
 ### Error Response
 

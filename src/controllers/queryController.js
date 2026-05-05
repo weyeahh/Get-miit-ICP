@@ -65,6 +65,8 @@ export function resetStores() {
 
 export async function handleQuery(request, response) {
   const rawDomain = queryParamLast(request.url, 'domain') ?? '';
+  const rawUnitName = queryParamLast(request.url, 'unitName') ?? '';
+  const rawLicence = queryParamLast(request.url, 'licence') ?? '';
   const ip = ClientIp.detect(request);
   const start = Date.now();
   let domain = '';
@@ -84,7 +86,8 @@ export async function handleQuery(request, response) {
     const code = payload?.code ?? 200;
     const cache = payload?.cache ?? '-';
     const httpStatus = status ?? 200;
-    process.stdout.write(`[${localISOString()}] ${ip} ${domain || '-'} ${httpStatus} ${code} ${cache} ${duration}\n`);
+    const queryKey = domain || rawUnitName || rawLicence || '-';
+    process.stdout.write(`[${localISOString()}] ${ip} ${queryKey} ${httpStatus} ${code} ${cache} ${duration}\n`);
   };
 
   try {
@@ -107,11 +110,23 @@ export async function handleQuery(request, response) {
       }
     }
 
+    const debug = config.bool('debug.enabled');
+
+    if (rawUnitName !== '' || rawLicence !== '') {
+      const keyword = rawUnitName || rawLicence;
+      guard = new QueryGuard(await getRateLimiter(), config);
+      await guard.assertAllowed(ip, keyword);
+
+      const service = new MiitQueryService();
+      const result = await service.queryList(keyword, debug);
+      respond(ResponseFormatter.listPayload(result));
+      return;
+    }
+
     const normalizer = new DomainNormalizer();
     queryCache = new QueryCache(await getCacheStore(), config);
     guard = new QueryGuard(await getRateLimiter(), config);
     const domainQueryLock = new DomainQueryLock(await getLockProvider());
-    const debug = config.bool('debug.enabled');
 
     domain = normalizer.normalize(rawDomain);
 

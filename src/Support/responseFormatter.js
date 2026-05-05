@@ -36,4 +36,32 @@ export class ResponseFormatter {
 
     return payload;
   }
+
+  static listPayload(data, { cache = 'miss', cached_at = null, cache_expires_at = null } = {}) {
+    const payload = {
+      code: 200,
+      message: 'successful',
+      cache,
+    };
+
+    if (cached_at !== null) {
+      payload.cached_at = cached_at;
+    }
+
+    if (cache_expires_at !== null) {
+      payload.cache_expires_at = cache_expires_at;
+    }
+
+    payload.data = {
+      UnitName: data.unitName,
+      MainLicence: data.mainLicence,
+      NatureName: data.natureName,
+      LeaderName: data.leaderName,
+      UpdateRecordTime: data.updateRecordTime,
+      Total: data.total,
+      Records: data.records,
+    };
+
+    return payload;
+  }
 }
