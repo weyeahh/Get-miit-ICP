@@ -1,30 +1,29 @@
 import { randomInt } from 'node:crypto';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { AppPaths } from '../Support/appPaths.js';
 import { acquireLock } from '../Support/fileLock.js';
-import { sha1 } from '../Support/hash.js';
 import { epochSeconds } from '../Support/time.js';
 import { StorageException } from '../Exception/miitException.js';
+import { FileStoreBase } from '../Support/fileStoreUtils.js';
 
-export class FileCache {
+export class FileCache extends FileStoreBase {
   constructor(directory = null) {
-    this.directory = directory ?? AppPaths.storagePath('cache');
-    this.dirEnsured = false;
+    super(directory ?? AppPaths.storagePath('cache'));
     this.gcRunning = false;
   }
 
   async get(key) {
     await this.ensureDir();
     const file = this.fileForKey(key);
-    const payload = await this.readPayload(file, true);
+    const payload = await this.removeExpired(file, true);
     return payload?.value !== null && typeof payload?.value === 'object' && !Array.isArray(payload.value) ? payload.value : null;
   }
 
   async getStale(key) {
     await this.ensureDir();
     const file = this.fileForKey(key);
-    const payload = await this.readPayload(file, false);
+    const payload = await this.readJson(file);
     return payload?.value !== null && typeof payload?.value === 'object' && !Array.isArray(payload.value) ? payload.value : null;
   }
 
@@ -37,69 +36,12 @@ export class FileCache {
       value,
     };
 
-    let json;
-    try {
-      json = JSON.stringify(payload);
-    } catch (error) {
-      throw new StorageException('failed to encode cache payload', 'service storage is not ready', { cause: error });
-    }
-
     const lock = await this.lockForFile(file);
     try {
-      await writeAtomic(file, json);
+      await this.writeJson(file, payload);
     } finally {
       await lock.release();
     }
-  }
-
-  async ensureDir() {
-    if (!this.dirEnsured) {
-      await AppPaths.ensureDir(this.directory, true);
-      this.dirEnsured = true;
-    }
-  }
-
-  fileForKey(key) {
-    return path.join(this.directory, `${sha1(key)}.json`);
-  }
-
-  async lockForFile(file) {
-    try {
-      return await acquireLock(`${file}.lock`);
-    } catch (error) {
-      throw new StorageException('failed to lock cache file', 'service storage is not ready', { cause: error });
-    }
-  }
-
-  async readPayload(file, enforceTTL) {
-    let raw;
-    try {
-      raw = await readFile(file, 'utf8');
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        return null;
-      }
-      throw new StorageException('failed to open cache file', 'service storage is not ready', { cause: error });
-    }
-
-    if (raw === '') {
-      return null;
-    }
-
-    let payload;
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-
-    const expiresAt = Number.parseInt(payload?.expires_at ?? 0, 10) || 0;
-    if (enforceTTL && expiresAt > 0 && expiresAt < epochSeconds()) {
-      await rm(file, { force: true }).catch(() => {});
-      return null;
-    }
-
-    return payload;
   }
 
   async gc() {
@@ -124,28 +66,10 @@ export class FileCache {
         }
 
         try {
-          let deleteFile = false;
-          let raw = '';
-          try {
-            raw = await readFile(file, 'utf8');
-          } catch {
-            deleteFile = true;
-          }
-
-          if (raw === '') {
-            deleteFile = true;
-          } else {
-            try {
-              const decoded = JSON.parse(raw);
-              const expiresAt = Number.parseInt(decoded?.expires_at ?? 0, 10) || 0;
-              deleteFile = expiresAt > 0 && expiresAt < now;
-            } catch {
-              deleteFile = true;
-            }
-          }
-
-          if (deleteFile) {
-            await rm(file, { force: true });
+          const payload = await this.readJson(file);
+          const expiresAt = Number.parseInt(payload?.expires_at ?? 0, 10) || 0;
+          if (payload === null || (expiresAt > 0 && expiresAt < now)) {
+            await rm(file, { force: true }).catch(() => {});
           }
         } finally {
           await lock.release();
@@ -154,13 +78,5 @@ export class FileCache {
     } finally {
       this.gcRunning = false;
     }
-  }
-}
-
-async function writeAtomic(file, content) {
-  try {
-    await writeFile(file, content, 'utf8');
-  } catch (error) {
-    throw new StorageException('failed to write complete cache file', 'service storage is not ready', { cause: error });
   }
 }

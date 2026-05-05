@@ -1,28 +1,28 @@
 import { randomInt } from 'node:crypto';
-import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { AppPaths } from '../Support/appPaths.js';
 import { acquireLock } from '../Support/fileLock.js';
-import { sha1 } from '../Support/hash.js';
 import { epochSeconds } from '../Support/time.js';
 import { StorageException } from '../Exception/miitException.js';
+import { FileStoreBase } from '../Support/fileStoreUtils.js';
 
-export class FileRateLimiter {
+export class FileRateLimiter extends FileStoreBase {
   constructor(directory = null) {
-    this.directory = directory ?? AppPaths.storagePath('ratelimit');
+    super(directory ?? AppPaths.storagePath('ratelimit'));
     this.gcRunning = false;
   }
 
   async hit(key, windowSeconds, limit) {
+    await this.ensureDir();
     await this.gc();
-    await AppPaths.ensureDir(this.directory, true);
     const file = this.fileForKey(key);
     const lock = await this.lockForFile(file);
     try {
       const state = await this.readState(file);
       const next = this.nextWindowState(state, windowSeconds, epochSeconds());
       next.count = Number.parseInt(next.count ?? 0, 10) + 1;
-      await this.writeState(file, next);
+      await this.writeJson(file, next);
       return next.count <= limit;
     } finally {
       await lock.release();
@@ -30,12 +30,11 @@ export class FileRateLimiter {
   }
 
   async setCooldown(key, ttlSeconds) {
-    await this.gc();
-    await AppPaths.ensureDir(this.directory, true);
+    await this.ensureDir();
     const file = this.fileForKey(`cooldown:${key}`);
     const lock = await this.lockForFile(file);
     try {
-      await this.writeState(file, {
+      await this.writeJson(file, {
         cooldown_until: epochSeconds() + Math.max(1, ttlSeconds),
       });
     } finally {
@@ -44,14 +43,14 @@ export class FileRateLimiter {
   }
 
   async inCooldown(key) {
-    await AppPaths.ensureDir(this.directory, true);
+    await this.ensureDir();
     const state = await this.readState(this.fileForKey(`cooldown:${key}`));
     return (Number.parseInt(state.cooldown_until ?? 0, 10) || 0) > epochSeconds();
   }
 
   async consumeAll(rules) {
+    await this.ensureDir();
     await this.gc();
-    await AppPaths.ensureDir(this.directory, true);
     const entries = rules.map((rule) => ({
       rule,
       file: this.fileForKey(rule.key),
@@ -59,9 +58,9 @@ export class FileRateLimiter {
     })).sort((left, right) => left.file.localeCompare(right.file));
 
     try {
-      for (const entry of entries) {
+      await Promise.all(entries.map(async (entry) => {
         entry.lock = await this.lockForFile(entry.file);
-      }
+      }));
 
       const now = epochSeconds();
       const states = [];
@@ -76,9 +75,7 @@ export class FileRateLimiter {
         states.push(next);
       }
 
-      for (let index = 0; index < entries.length; index++) {
-        await this.writeState(entries[index].file, states[index]);
-      }
+      await Promise.all(entries.map((entry, i) => this.writeJson(entry.file, states[i])));
     } finally {
       for (const entry of entries.reverse()) {
         if (entry.lock !== null) {
@@ -98,53 +95,8 @@ export class FileRateLimiter {
   }
 
   async readState(file) {
-    let raw;
-    try {
-      raw = await readFile(file, 'utf8');
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        return {};
-      }
-      throw new StorageException('failed to open rate limit file for read', 'service storage is not ready', { cause: error });
-    }
-
-    if (raw === '') {
-      return {};
-    }
-
-    try {
-      const decoded = JSON.parse(raw);
-      return decoded !== null && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : {};
-    } catch {
-      return {};
-    }
-  }
-
-  async writeState(file, state) {
-    let json;
-    try {
-      json = JSON.stringify(state);
-    } catch (error) {
-      throw new StorageException('failed to encode rate limit state', 'service storage is not ready', { cause: error });
-    }
-
-    try {
-      await writeFile(file, json, 'utf8');
-    } catch (error) {
-      throw new StorageException('failed to write complete rate limit state', 'service storage is not ready', { cause: error });
-    }
-  }
-
-  fileForKey(key) {
-    return path.join(this.directory, `${sha1(key)}.json`);
-  }
-
-  async lockForFile(file) {
-    try {
-      return await acquireLock(`${file}.lock`);
-    } catch (error) {
-      throw new StorageException('failed to lock rate limit file', 'service storage is not ready', { cause: error });
-    }
+    const state = await this.readJson(file);
+    return state !== null && typeof state === 'object' && !Array.isArray(state) ? state : {};
   }
 
   async gc() {
@@ -154,7 +106,6 @@ export class FileRateLimiter {
 
     this.gcRunning = true;
     try {
-      await AppPaths.ensureDir(this.directory, true);
       const now = epochSeconds();
       const entries = await readdir(this.directory, { withFileTypes: true });
       for (const entry of entries) {
