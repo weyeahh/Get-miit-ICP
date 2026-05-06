@@ -3,11 +3,11 @@ export class IcpApi {
     this.client = client;
   }
 
-  async queryByCondition(domain) {
+  async queryByCondition(keyword, pageSize = 200) {
     return this.client.postJson('icpAbbreviateInfo/queryByCondition', {
-      pageNum: '',
-      pageSize: '',
-      unitName: domain,
+      pageNum: 1,
+      pageSize,
+      unitName: keyword,
       serviceType: 1,
     });
   }
