@@ -235,7 +235,7 @@ http://127.0.0.1:8080/?domain=baidu.com
 | `PORT` | integer | `8080` | 服务监听端口 |
 | `MIIT_CACHE_SCHEMA_VERSION` | string | `v1` | 缓存结构版本，修改后旧缓存自动失效 |
 | `MIIT_CACHE_SUCCESS_TTL` | integer | `259200` | 成功查询结果缓存时长（秒），范围 60–604800 |
-| `MIIT_CACHE_MISS_TTL` | integer | `1800` | 空结果缓存时长（秒），范围 30–86400 |
+| `MIIT_CACHE_MISS_TTL` | integer | `43200` | 空结果缓存时长（秒），范围 30–86400 |
 | `MIIT_CACHE_LIST_TTL` | integer | `86400` | unitName/licence 列表缓存时长（秒），范围 60–604800 |
 | `MIIT_CACHE_SUCCESS_STALE_TTL` | integer | `604800` | 成功结果 Redis 物理保留时长（秒），仅 `redis` 后端生效，范围 300–2592000 |
 | `MIIT_CACHE_MISS_STALE_TTL` | integer | `86400` | 空结果 Redis 物理保留时长（秒），仅 `redis` 后端生效，范围 60–604800 |
@@ -272,7 +272,7 @@ PORT=8080
 # 缓存
 MIIT_CACHE_SCHEMA_VERSION=v1
 MIIT_CACHE_SUCCESS_TTL=259200
-MIIT_CACHE_MISS_TTL=1800
+MIIT_CACHE_MISS_TTL=43200
 MIIT_CACHE_LIST_TTL=86400
 MIIT_CACHE_SUCCESS_STALE_TTL=604800
 MIIT_CACHE_MISS_STALE_TTL=86400

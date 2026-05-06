@@ -4,7 +4,7 @@ const DEFAULTS = {
   cache: {
     schema_version: 'v1',
     success_ttl: 259200,
-    miss_ttl: 1800,
+    miss_ttl: 43200,
     list_ttl: 86400,
     success_stale_ttl: 604800,
     miss_stale_ttl: 86400,
