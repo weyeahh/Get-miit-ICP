@@ -1,6 +1,6 @@
 # Get MIIT ICP
 
-一个基于 Node.js 的 MIIT 备案查询服务，接收 `GET` 请求中的 `domain` 参数，返回工信部备案详细信息，适配了最新版工信部查询系统的滑块验证。
+一个基于 Node.js 的 MIIT 备案查询服务，接收 `GET` 请求中的 `domain`、`unitName`、`licence` 参数，返回工信部备案详细信息，适配了最新版工信部查询系统的滑块验证。
 
 部分思路来源于 [Mxmilu666/fuckmiit](https://github.com/Mxmilu666/fuckmiit)，本项目在此基础上进行了全面重构和扩展，补充了输入校验、限流、缓存、错误脱敏、环境预检和失败冷却等机制，以降低上游风控风险。
 
@@ -104,7 +104,7 @@
 
 1. 客户端发起请求：`GET /?domain=example.com`（或 `?unitName=xxx`、`?licence=xxx`）
 2. `src/app.js` 创建 HTTP server，`src/controllers/queryController.js` 处理请求
-3. `EnvironmentGuard` 在入口阶段检查 `https`、`JSON` 和 Node 版本是否可用
+3. `EnvironmentGuard` 在入口阶段检查 Node 版本（>=18.18）和 `sharp` 可用性
 4. 根据参数类型分流：
    - **domain 查询**：`DomainNormalizer` 执行域名规范化与校验，然后执行步骤 5–19
    - **unitName/licence 查询**：执行 `MiitQueryService.queryList()`，流程类似步骤 5–13，但返回完整列表而非单条详情；查询成功后自动将结果写入 `list:{unitName}` 和 `list:{mainLicence}` 缓存，并逐条填充 `success:{domain}` 缓存
@@ -152,41 +152,42 @@
    负责缓存文件的加锁读取、完整性校验写入和带锁轻量级过期清理。继承 `FileStoreBase`。
 
 9. `src/Support/fileStoreUtils.js`
-   文件存储基类，为 `FileCache` 和 `FileRateLimiter` 提供共享的 `ensureDir`（带缓存）、`fileForKey`、`lockForFile`、`readJson`、`writeJson`、`removeExpired` 方法，消除重复代码。
+   文件存储基类，为 `FileCache` 和 `FileRateLimiter` 提供共享的 `ensureDir`（带缓存）、`fileForKey`、`lockForFile`、`readJson`、`writeJson`、`removeExpired`、`gc`（概率触发的过期清理，子类通过 `shouldDelete` 回调控制删除策略）方法，消除重复代码。
 
-9. `src/Api/miitClient.js`
-   通用 HTTPS 客户端，维护请求头、Cookie、超时控制和上游错误截断。
+10. `src/Api/miitClient.js`
+    通用 HTTPS 客户端，维护请求头、Cookie、超时控制和上游错误截断。
 
-10. `src/Api/authApi.js`
+11. `src/Api/authApi.js`
     封装 `auth` 接口和 `authKey` 生成逻辑，并把鉴权协议失败统一归类为上游错误。
 
-11. `src/Api/captchaApi.js`
+12. `src/Api/captchaApi.js`
     封装验证码获取与校验接口，并把验证码协议失败统一归类为上游错误。
 
-12. `src/Captcha/captchaSolver.js`
+13. `src/Captcha/captchaSolver.js`
     验证码识别核心模块，负责按单个 challenge 组织灰色缺口检测、模板候选生成、近似兜底、候选排序和 challenge 失败后的重新获取，并返回实际成功的 `captchaUuid` 供后续请求头写回。图像解码使用 `sharp`。
-13. `src/Captcha/captchaCore.js`
+
+14. `src/Captcha/captchaCore.js`
     验证码底层算法模块，提供连通域 flood-fill、方块判定、缺口颜色自适应采样、多组预置色域回退轮询和窗口评分等纯函数。
 
-13. `src/Api/icpApi.js`
+15. `src/Api/icpApi.js`
     封装备案列表和详情查询接口。
 
-14. `src/Service/miitQueryService.js`
+16. `src/Service/miitQueryService.js`
     业务编排层，串起完整的 MIIT 查询流程，并补充关键字段校验、列表精确匹配、有效标识符优先选择和列表详情兜底策略。
 
-15. `src/Support/logger.js`
+17. `src/Support/logger.js`
     负责将详细错误和 debug 诊断信息写入本地日志，并在日志失败时降级到 `process.stderr`。
 
-16. `src/Http/jsonResponse.js`
+18. `src/Http/jsonResponse.js`
     负责响应输出，并在 JSON 编码失败时输出保底错误 JSON。
 
-17. `src/Support/environmentGuard.js`
-    负责运行前检查 `https` 模块、JSON 支持和 Node 版本。
+19. `src/Support/environmentGuard.js`
+    负责运行前检查 Node 版本（>=18.18）和 `sharp` 可用性。
 
-18. `src/Support/responseFormatter.js`
+20. `src/Support/responseFormatter.js`
     负责最终成功响应封装，并显式校验详情必填字段存在性。
 
-19. `src/Storage/redisBackend.js`
+21. `src/Storage/redisBackend.js`
     Redis 存储后端实现，包含 `RedisCache`（带逻辑过期的双层 TTL 缓存）、`RedisRateLimiter`（基于 Lua 脚本的固定窗口原子限流）和 `RedisLockProvider`（带 watchdog 续期的分布式互斥锁）。Redis 客户端使用 Promise 单例模式避免并发初始化竞态，并注册 `error` 事件监听防止未捕获异常。通过 `closeRedisClient()` 支持优雅关闭。
 
 ## Requirements
@@ -534,7 +535,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 为了降低上游风控风险，当前版本增加了治理层：
 
 1. domain 参数进入主链路前会做规范化与格式校验。
-2. `EnvironmentGuard` 会在入口层主动检查 `https` 模块、JSON 支持、Node 版本（>=18.18）和 `sharp` 可用性，避免服务运行到中途才因环境缺陷崩溃。
+2. `EnvironmentGuard` 会在入口层主动检查 Node 版本（>=18.18）和 `sharp` 可用性，避免服务运行到中途才因环境缺陷崩溃。
 3. 缓存优先于上游频控，缓存命中不会消耗上游配额。
 4. 同一 domain 的并发请求先竞争 singleflight 锁，只有真正准备访问上游的请求才在锁内执行频控计数，避免“未出站先扣额度”的限流语义污染。
 5. 全局、IP、domain 限流都通过 `AppConfig` 配置化，而不是硬编码在业务逻辑里，并支持通过环境变量覆盖默认值。
@@ -544,7 +545,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 9. `FileRateLimiter` 的频控窗口文件和 cooldown 文件使用 `mkdir` 原子文件锁保护写入，读取 cooldown 时也加锁避免 TOCTOU 竞争。
 10. `consumeAll()` 在多文件加锁过程中使用单独的已加锁句柄列表，即使中途打开或加锁失败，也会在 `finally` 中释放已持有的锁，避免锁泄漏。
 11. `FileCache` 读取缓存时使用共享锁，写入缓存时使用独占锁，并校验编码、截断、写入长度和 flush 完整性，避免并发读写读到半写入内容。
-12. `FileCache` 和 `FileRateLimiter` 都带有轻量级随机 GC，用于删除过期缓存、过期 cooldown 和陈旧限流窗口文件；GC 只在拿到非阻塞独占锁后才会清理文件，避免并发删除其他请求正在使用的状态文件。
+12. `FileCache` 和 `FileRateLimiter` 继承 `FileStoreBase` 共享轻量级随机 GC，通过 `shouldDelete` 回调控制各自的删除策略；GC 只在拿到非阻塞独占锁后才会清理文件，避免并发删除其他请求正在使用的状态文件。
 13. 同域请求在拿到 domain 锁后会再次读取 success/miss cache，降低锁等待期间的重复上游访问。
 14. 同域等待窗口不再固定为 2 秒，而是通过配置化的超时和轮询间隔控制；当前默认值已收紧为更保守的等待窗口，以减少 worker 长时间占用。
 15. 成功结果默认缓存 24 小时。
@@ -587,7 +588,7 @@ API key 无效或缺失时，HTTP status: `401`（仅当开启 API key 鉴权时
 10. 入口层的组件初始化、环境预检、缓存、锁、限流和查询都走统一异常出口。
 11. 日志系统是辅助能力，失败时不会反向影响主响应契约。
 12. 调试输出默认关闭，是否启用只由配置文件或环境变量控制，不再接受 URL 参数切换。
-13. 当前 `EnvironmentGuardTest` 会真实调用 `EnvironmentGuard.assertRuntimeReady()`，根据当前环境中的 `https` 模块和 Node 版本断言预检行为。
+13. 当前 `EnvironmentGuardTest` 会真实调用 `EnvironmentGuard.assertRuntimeReady()`，根据当前环境中的 Node 版本断言预检行为。
 14. 服务支持 SIGTERM / SIGINT 优雅关闭，关闭时会等待 HTTP 连接排空并断开 Redis 连接；日志按日期轮转并自动清理 7 天前的文件；`storage/debug/captcha/` 最多保留 20 个样本目录，防止磁盘无限增长。
 
 15. 请求处理管线中的 `AppConfig`、`CacheStore`、`RateLimiter`、`LockProvider` 使用模块级懒加载单例，避免每请求重复创建对象和重复执行配置解析。`handleError` 路径复用同一 `AppConfig` 实例，不再每次新建。
