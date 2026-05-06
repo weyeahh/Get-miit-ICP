@@ -5,6 +5,7 @@ const DEFAULTS = {
     schema_version: 'v1',
     success_ttl: 86400,
     miss_ttl: 1800,
+    list_ttl: 3600,
     success_stale_ttl: 604800,
     miss_stale_ttl: 86400,
   },
@@ -42,6 +43,7 @@ const DEFAULTS = {
 const INT_CLAMP = new Map([
   ['cache.success_ttl', [60, 604800]],
   ['cache.miss_ttl', [30, 86400]],
+  ['cache.list_ttl', [60, 604800]],
   ['cache.success_stale_ttl', [300, 2592000]],
   ['cache.miss_stale_ttl', [60, 604800]],
   ['ratelimit.global_qps', [1, 1000]],
@@ -59,6 +61,7 @@ const ENV_MAP = new Map([
   ['MIIT_CACHE_SCHEMA_VERSION', 'cache.schema_version'],
   ['MIIT_CACHE_SUCCESS_TTL', 'cache.success_ttl'],
   ['MIIT_CACHE_MISS_TTL', 'cache.miss_ttl'],
+  ['MIIT_CACHE_LIST_TTL', 'cache.list_ttl'],
   ['MIIT_CACHE_SUCCESS_STALE_TTL', 'cache.success_stale_ttl'],
   ['MIIT_CACHE_MISS_STALE_TTL', 'cache.miss_stale_ttl'],
   ['MIIT_RATE_LIMIT_GLOBAL_QPS', 'ratelimit.global_qps'],

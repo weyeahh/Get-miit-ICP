@@ -43,7 +43,14 @@ export class QueryCache {
   }
 
   async putList(key, detail) {
-    return this.putDetail('list', key, detail);
+    const { ttl, now } = this.ttlContext('cache.list_ttl');
+    const payload = {
+      _schema_version: this.schemaVersion(),
+      _cached_at: localISOString(now),
+      _cache_expires_at: localISOString(new Date(now.getTime() + ttl * 1000)),
+      detail,
+    };
+    await this.writePayload('list', key, payload, ttl);
   }
 
   async getDetail(prefix, key, stale = false) {
