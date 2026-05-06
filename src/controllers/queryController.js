@@ -252,7 +252,29 @@ export async function handleQuery(request, response) {
     const debug = getConfig().bool('debug.enabled');
 
     if (rawUnitName !== '' || rawLicence !== '') {
-      await handleListQuery(rawUnitName || rawLicence, respond, ip, debug);
+      const keyword = rawUnitName || rawLicence;
+
+      if (looksLikeDomain(keyword)) {
+        respond({
+          code: 400,
+          message: 'domain format input is not allowed for unitName/licence, use the domain parameter instead',
+          data: null,
+        }, 400);
+        return;
+      }
+
+      if (rawLicence !== '' && isServiceLicence(rawLicence)) {
+        domain = rawLicence;
+        const result = await handleDomainQuery(domain, respond, ip, debug);
+        if (result !== null) {
+          mutex = result.mutex;
+          queryCache = result.queryCache;
+          guard = result.guard;
+        }
+        return;
+      }
+
+      await handleListQuery(keyword, respond, ip, debug);
       return;
     }
 
@@ -452,4 +474,13 @@ async function handleError(error, respond, context) {
 function queryParamLast(requestUrl, name) {
   const url = new URL(requestUrl, 'http://localhost');
   return url.searchParams.get(name);
+}
+
+function looksLikeDomain(input) {
+  const trimmed = String(input).trim();
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/iu.test(trimmed) && trimmed.includes('.');
+}
+
+function isServiceLicence(input) {
+  return /号-\d+$/u.test(String(input).trim());
 }
