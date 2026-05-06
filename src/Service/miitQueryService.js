@@ -6,8 +6,7 @@ import { CaptchaSolver } from '../Captcha/captchaSolver.js';
 import { MiitException, RecordNotFoundException, UpstreamException } from '../Exception/miitException.js';
 import { Debug } from '../Support/debug.js';
 import { epochSeconds, sleep } from '../Support/time.js';
-
-const DETAIL_FIELDS = ['domain', 'unitName', 'mainLicence', 'serviceLicence', 'natureName', 'leaderName', 'updateRecordTime'];
+import { DETAIL_FIELDS } from '../Support/utils.js';
 
 const ID_FIELD_CANDIDATES = {
   mainId: ['mainId', 'mainID', 'main_id', 'ids.mainId', 'record.mainId', 'mainInfo.mainId'],
@@ -22,12 +21,7 @@ export class MiitQueryService {
     this.timeout = timeout;
   }
 
-  async queryDomainDetail(domain, debug = false) {
-    domain = String(domain).trim();
-    if (domain === '') {
-      throw new MiitException('domain is required');
-    }
-
+  async prepareAuthenticatedClient(debug = false) {
     const timestamp = epochSeconds();
     const client = new MiitClient(this.timeout);
     const authApi = new AuthApi(client);
@@ -64,6 +58,17 @@ export class MiitQueryService {
 
     client.setSign(sign);
     client.setUuid(solvedUuid);
+
+    return { client, icpApi, debug };
+  }
+
+  async queryDomainDetail(domain, debug = false) {
+    domain = String(domain).trim();
+    if (domain === '') {
+      throw new MiitException('domain is required');
+    }
+
+    const { icpApi } = await this.prepareAuthenticatedClient(debug);
 
     await Debug.log(debug, `step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=${domain} serviceType=1`);
     const queryResponse = await this.retryUpstream(() => icpApi.queryByCondition(domain));
@@ -169,42 +174,7 @@ export class MiitQueryService {
       throw new MiitException('keyword is required');
     }
 
-    const timestamp = epochSeconds();
-    const client = new MiitClient(this.timeout);
-    const authApi = new AuthApi(client);
-    const captchaApi = new CaptchaApi(client);
-    const icpApi = new IcpApi(client);
-    const solver = new CaptchaSolver(client, captchaApi);
-
-    await Debug.log(debug, `step=auth timestamp=${timestamp}`);
-    const authResponse = await this.retryUpstream(() => authApi.auth(timestamp));
-    await Debug.log(debug, `step=auth success=true expire=${String(authResponse.params?.expire ?? '')}`);
-
-    const clientUid = CaptchaApi.newClientUid();
-    await Debug.log(debug, `step=getCheckImagePoint clientUid=${clientUid}`);
-
-    const challenge = await this.retryUpstream(() => captchaApi.getCheckImagePoint(clientUid));
-    const params = challenge.params !== null && typeof challenge.params === 'object' ? challenge.params : {};
-    const captchaUuid = String(params.uuid ?? '');
-    const bigImage = String(params.bigImage ?? '');
-    const smallImage = String(params.smallImage ?? '');
-    const height = phpInt(params.height, -1);
-    if (captchaUuid === '' || bigImage === '' || height < 0) {
-      throw new UpstreamException('captcha challenge params missing', 'upstream query failed');
-    }
-
-    await Debug.log(debug, `step=getCheckImagePoint success=true captchaUUID=${captchaUuid} height=${height}`);
-
-    const solved = await solver.solve(captchaUuid, bigImage, smallImage, height, debug);
-    const checkResponse = solved.response;
-    const solvedUuid = String(solved.solvedUuid ?? captchaUuid);
-    const sign = String(checkResponse.params ?? '');
-    if (sign === '') {
-      throw new UpstreamException('checkImage response missing sign', 'upstream query failed');
-    }
-
-    client.setSign(sign);
-    client.setUuid(solvedUuid);
+    const { icpApi } = await this.prepareAuthenticatedClient(debug);
 
     await Debug.log(debug, `step=query endpoint=icpAbbreviateInfo/queryByCondition unitName=${keyword} serviceType=1`);
     const queryResponse = await this.retryUpstream(() => icpApi.queryByCondition(keyword));

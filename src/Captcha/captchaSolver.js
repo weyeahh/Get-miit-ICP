@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppConfig } from '../Config/appConfig.js';
 import { CaptchaApi } from '../Api/captchaApi.js';
@@ -420,7 +420,6 @@ export class CaptchaSolver {
       candidates: this.candidateSummaries(candidates),
     };
 
-    await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
   }
 }

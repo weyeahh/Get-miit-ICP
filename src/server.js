@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createApp } from './app.js';
+import { resetStores } from './controllers/queryController.js';
 
 loadEnv();
 
-import { createApp } from './app.js';
-import { resetStores } from './controllers/queryController.js';
+const host = process.env.HOST || '127.0.0.1';
+const port = Number.parseInt(process.env.PORT || '8080', 10);
 
 function loadEnv() {
   const root = dirname(fileURLToPath(import.meta.url));
@@ -31,9 +33,6 @@ function loadEnv() {
     }
   }
 }
-
-const host = process.env.HOST || '127.0.0.1';
-const port = Number.parseInt(process.env.PORT || '8080', 10);
 
 const server = createApp();
 server.listen(port, host, () => {

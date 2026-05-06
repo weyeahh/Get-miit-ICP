@@ -1,8 +1,5 @@
-import { randomInt } from 'node:crypto';
-import { readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { AppPaths } from '../Support/appPaths.js';
-import { acquireLock } from '../Support/fileLock.js';
 import { epochSeconds } from '../Support/time.js';
 import { StorageException } from '../Exception/miitException.js';
 import { FileStoreBase } from '../Support/fileStoreUtils.js';
@@ -10,7 +7,6 @@ import { FileStoreBase } from '../Support/fileStoreUtils.js';
 export class FileRateLimiter extends FileStoreBase {
   constructor(directory = null) {
     super(directory ?? AppPaths.storagePath('ratelimit'));
-    this.gcRunning = false;
   }
 
   async hit(key, windowSeconds, limit) {
@@ -99,42 +95,14 @@ export class FileRateLimiter extends FileStoreBase {
     return state !== null && typeof state === 'object' && !Array.isArray(state) ? state : {};
   }
 
-  async gc() {
-    if (this.gcRunning || randomInt(1, 51) !== 1) {
-      return;
+  shouldDelete(payload, now) {
+    if (payload === null) {
+      return true;
     }
-
-    this.gcRunning = true;
-    try {
-      const now = epochSeconds();
-      const entries = await readdir(this.directory, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith('.json')) {
-          continue;
-        }
-
-        const file = path.join(this.directory, entry.name);
-        const lock = await acquireLock(`${file}.lock`, { wait: false });
-        if (lock === null) {
-          continue;
-        }
-
-        try {
-          const state = await this.readState(file);
-          const cooldownUntil = Number.parseInt(state.cooldown_until ?? 0, 10) || 0;
-          const windowStart = Number.parseInt(state.window_started_at ?? 0, 10) || 0;
-          const deleteFile = Object.keys(state).length === 0
-            || (cooldownUntil > 0 && cooldownUntil < now)
-            || (windowStart > 0 && (now - windowStart) > 3600);
-          if (deleteFile) {
-            await rm(file, { force: true }).catch(() => {});
-          }
-        } finally {
-          await lock.release();
-        }
-      }
-    } finally {
-      this.gcRunning = false;
-    }
+    const cooldownUntil = Number.parseInt(payload.cooldown_until ?? 0, 10) || 0;
+    const windowStart = Number.parseInt(payload.window_started_at ?? 0, 10) || 0;
+    return Object.keys(payload).length === 0
+      || (cooldownUntil > 0 && cooldownUntil < now)
+      || (windowStart > 0 && (now - windowStart) > 3600);
   }
 }

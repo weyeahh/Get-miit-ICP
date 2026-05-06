@@ -1,10 +1,9 @@
 import { InternalErrorException } from '../Exception/miitException.js';
-
-const REQUIRED_FIELDS = ['domain', 'unitName', 'mainLicence', 'serviceLicence', 'natureName', 'leaderName', 'updateRecordTime'];
+import { DETAIL_FIELDS } from './utils.js';
 
 export class ResponseFormatter {
   static successPayload(detail, { cache = 'miss', cached_at = null, cache_expires_at = null } = {}) {
-    for (const field of REQUIRED_FIELDS) {
+    for (const field of DETAIL_FIELDS) {
       if (typeof detail[field] !== 'string') {
         throw new InternalErrorException(`detail response missing required field: ${field}`, 'internal server error');
       }

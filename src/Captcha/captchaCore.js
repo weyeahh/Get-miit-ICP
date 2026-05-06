@@ -1,6 +1,7 @@
 import { Rect } from './rect.js';
 import { decodeImage } from './imageDecoder.js';
 import { UpstreamException } from '../Exception/miitException.js';
+import { clamp } from '../Support/utils.js';
 
 export const COLOR_TOLERANCE = 12;
 export const RELAXED_COLOR_TOLERANCE = 24;
@@ -61,26 +62,6 @@ export async function detectSquareColorAdaptive(image, topHint, sampledColor = n
   }
 
   return null;
-}
-
-export async function detectSquareBase64WithHint(encoded, topHint) {
-  const imageData = decodeBase64Image(encoded);
-  const image = await decodeImage(imageData);
-
-  const box = await detectSquareColorAdaptive(image, topHint, null);
-  if (box !== null) {
-    return box;
-  }
-
-  if (topHint >= 0) {
-    return estimateGapFromHint(image, topHint, 0);
-  }
-
-  throw new UpstreamException('captcha square not found', 'upstream query failed');
-}
-
-export async function findSquareBase64WithHint(encoded, topHint) {
-  return findSquareBufferWithHint(decodeBase64Image(encoded), topHint);
 }
 
 export async function findSquareBufferWithHint(binary, topHint) {
@@ -293,10 +274,6 @@ export function candidateOffsets(center, radius) {
   }
 
   return offsets;
-}
-
-export function clamp(value, low, high) {
-  return Math.max(low, Math.min(high, value));
 }
 
 function decodeStandardBase64(value) {

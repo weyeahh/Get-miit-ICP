@@ -1,3 +1,5 @@
+import { clamp } from '../Support/utils.js';
+
 const DEFAULTS = {
   cache: {
     schema_version: 'v1',
@@ -37,6 +39,22 @@ const DEFAULTS = {
   },
 };
 
+const INT_CLAMP = new Map([
+  ['cache.success_ttl', [60, 604800]],
+  ['cache.miss_ttl', [30, 86400]],
+  ['cache.success_stale_ttl', [300, 2592000]],
+  ['cache.miss_stale_ttl', [60, 604800]],
+  ['ratelimit.global_qps', [1, 1000]],
+  ['ratelimit.ip_per_minute', [1, 10000]],
+  ['ratelimit.domain_per_window', [1, 1000]],
+  ['ratelimit.domain_window_seconds', [1, 86400]],
+  ['ratelimit.domain_cooldown_seconds', [1, 3600]],
+  ['ratelimit.global_cooldown_seconds', [1, 3600]],
+  ['ratelimit.domain_wait_timeout_seconds', [0, 10]],
+  ['ratelimit.domain_wait_interval_milliseconds', [10, 1000]],
+  ['log.max_detail_length', [64, 4096]],
+]);
+
 const ENV_MAP = new Map([
   ['MIIT_CACHE_SCHEMA_VERSION', 'cache.schema_version'],
   ['MIIT_CACHE_SUCCESS_TTL', 'cache.success_ttl'],
@@ -75,36 +93,8 @@ export class AppConfig {
 
   int(key) {
     const value = Number.parseInt(this.values.get(key) ?? 0, 10) || 0;
-    switch (key) {
-      case 'cache.success_ttl':
-        return clamp(value, 60, 604800);
-      case 'cache.miss_ttl':
-        return clamp(value, 30, 86400);
-      case 'cache.success_stale_ttl':
-        return clamp(value, 300, 2592000);
-      case 'cache.miss_stale_ttl':
-        return clamp(value, 60, 604800);
-      case 'ratelimit.global_qps':
-        return clamp(value, 1, 1000);
-      case 'ratelimit.ip_per_minute':
-        return clamp(value, 1, 10000);
-      case 'ratelimit.domain_per_window':
-        return clamp(value, 1, 1000);
-      case 'ratelimit.domain_window_seconds':
-        return clamp(value, 1, 86400);
-      case 'ratelimit.domain_cooldown_seconds':
-        return clamp(value, 1, 3600);
-      case 'ratelimit.global_cooldown_seconds':
-        return clamp(value, 1, 3600);
-      case 'ratelimit.domain_wait_timeout_seconds':
-        return clamp(value, 0, 10);
-      case 'ratelimit.domain_wait_interval_milliseconds':
-        return clamp(value, 10, 1000);
-      case 'log.max_detail_length':
-        return clamp(value, 64, 4096);
-      default:
-        return value;
-    }
+    const range = INT_CLAMP.get(key);
+    return range ? clamp(value, range[0], range[1]) : value;
   }
 
   bool(key) {
@@ -148,8 +138,4 @@ function flatten(values, prefix = '', result = new Map()) {
   }
 
   return result;
-}
-
-function clamp(value, low, high) {
-  return Math.max(low, Math.min(high, value));
 }

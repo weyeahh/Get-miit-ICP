@@ -1,6 +1,5 @@
 import https from 'node:https';
 import { URL } from 'node:url';
-import { AppConfig } from '../Config/appConfig.js';
 import { MiitException, UpstreamException } from '../Exception/miitException.js';
 import { DetailSanitizer } from '../Support/detailSanitizer.js';
 
@@ -15,7 +14,6 @@ const DEFAULT_LANGUAGE = 'zh-CN,zh-HK;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6';
 export class MiitClient {
   constructor(timeoutSeconds = 15) {
     this.timeoutSeconds = timeoutSeconds;
-    this.config = new AppConfig();
     this.cookies = new Map();
     this.headers = new Map([
       ['Host', SERVICE_HOST],
@@ -106,7 +104,7 @@ export class MiitClient {
         response.on('end', () => {
           const responseBody = Buffer.concat(chunks).toString('utf8');
           if (response.statusCode !== 200) {
-            const detail = DetailSanitizer.truncate(`request failed: status=${response.statusCode ?? 0} body=${responseBody.trim()}`, this.config);
+            const detail = DetailSanitizer.truncate(`request failed: status=${response.statusCode ?? 0} body=${responseBody.trim()}`);
             reject(new UpstreamException(detail, 'upstream query failed'));
             return;
           }

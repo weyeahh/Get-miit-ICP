@@ -1,4 +1,5 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { randomInt } from 'node:crypto';
 import path from 'node:path';
 import { AppPaths } from './appPaths.js';
 import { acquireLock } from './fileLock.js';
@@ -10,6 +11,7 @@ export class FileStoreBase {
   constructor(directory) {
     this.directory = directory;
     this.dirEnsured = false;
+    this.gcRunning = false;
   }
 
   async ensureDir() {
@@ -81,5 +83,43 @@ export class FileStoreBase {
     }
 
     return payload;
+  }
+
+  shouldDelete(_payload, _now) {
+    return false;
+  }
+
+  async gc() {
+    if (this.gcRunning || randomInt(1, 51) !== 1) {
+      return;
+    }
+
+    this.gcRunning = true;
+    try {
+      const now = epochSeconds();
+      const entries = await readdir(this.directory, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) {
+          continue;
+        }
+
+        const file = path.join(this.directory, entry.name);
+        const lock = await acquireLock(`${file}.lock`, { wait: false });
+        if (lock === null) {
+          continue;
+        }
+
+        try {
+          const payload = await this.readJson(file);
+          if (this.shouldDelete(payload, now)) {
+            await rm(file, { force: true }).catch(() => {});
+          }
+        } finally {
+          await lock.release();
+        }
+      }
+    } finally {
+      this.gcRunning = false;
+    }
   }
 }

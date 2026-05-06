@@ -42,10 +42,6 @@ async function write(level, message, context) {
     context,
   });
 
-  if (line === undefined) {
-    return;
-  }
-
   try {
     const dir = await AppPaths.ensureDir(AppPaths.storagePath('logs'), true);
     const file = path.join(dir, `app-${formatLocalDate()}.log`);

@@ -63,18 +63,8 @@ export function resetStores() {
   cachedLockProvider = null;
 }
 
-export async function handleQuery(request, response) {
-  const rawDomain = queryParamLast(request.url, 'domain') ?? '';
-  const rawUnitName = queryParamLast(request.url, 'unitName') ?? '';
-  const rawLicence = queryParamLast(request.url, 'licence') ?? '';
-  const ip = ClientIp.detect(request);
-  const start = Date.now();
-  let domain = '';
-  let mutex = null;
-  let queryCache = null;
-  let guard = null;
-
-  const respond = (payload, status) => {
+function buildRespond(response, start, context) {
+  return (payload, status) => {
     const duration = `${Date.now() - start}ms`;
     if (payload !== null && typeof payload === 'object' && 'data' in payload) {
       const { data, ...rest } = payload;
@@ -86,153 +76,195 @@ export async function handleQuery(request, response) {
     const code = payload?.code ?? 200;
     const cache = payload?.cache ?? '-';
     const httpStatus = status ?? 200;
-    const queryKey = domain || rawUnitName || rawLicence || '-';
-    process.stdout.write(`[${localISOString()}] ${ip} ${queryKey} ${httpStatus} ${code} ${cache} ${duration}\n`);
+    process.stdout.write(`[${localISOString()}] ${context.ip} ${context.queryKey} ${httpStatus} ${code} ${cache} ${duration}\n`);
   };
+}
 
-  try {
-    const config = getConfig();
-    EnvironmentGuard.assertRuntimeReady();
-    await EnvironmentGuard.assertSharpReady();
+function checkAuth(request, respond) {
+  const config = getConfig();
+  if (!config.bool('auth.api_key_enabled')) {
+    return true;
+  }
 
-    if (config.bool('auth.api_key_enabled')) {
-      const expectedKey = config.string('auth.api_key');
-      const headerKey = readHeader(request, 'x-api-key');
-      const queryKey = queryParamLast(request.url, 'api_key') ?? '';
-      const requestKey = headerKey !== '' ? headerKey : queryKey;
-      if (requestKey === '' || requestKey !== expectedKey) {
-        respond({
-          code: 401,
-          message: 'unauthorized',
-          data: { domain: '', detail: 'invalid or missing API key' },
-        }, 401);
+  const expectedKey = config.string('auth.api_key');
+  const headerKey = request.headers['x-api-key'] ?? '';
+  const url = new URL(request.url, 'http://localhost');
+  const queryKey = url.searchParams.get('api_key') ?? '';
+  const requestKey = headerKey !== '' ? String(headerKey) : queryKey;
+  if (requestKey === '' || requestKey !== expectedKey) {
+    respond({
+      code: 401,
+      message: 'unauthorized',
+      data: { domain: '', detail: 'invalid or missing API key' },
+    }, 401);
+    return false;
+  }
+
+  return true;
+}
+
+async function handleListQuery(keyword, respond, ip, debug) {
+  const config = getConfig();
+  const queryCache = new QueryCache(await getCacheStore(), config);
+  const guard = new QueryGuard(await getRateLimiter(), config);
+  const lockProvider = new DomainQueryLock(await getLockProvider());
+  const cacheKey = `list:${keyword}`;
+
+  const cachedList = await queryCache.getList(cacheKey);
+  if (cachedList !== null) {
+    respond(ResponseFormatter.listPayload(cachedList.detail, { cache: 'hit', cached_at: cachedList.cached_at, cache_expires_at: cachedList.cache_expires_at }));
+    return;
+  }
+
+  const mutex = await lockProvider.mutexFor(cacheKey);
+  if (!(await mutex.tryAcquire())) {
+    const deadline = Date.now() + config.int('ratelimit.domain_wait_timeout_seconds') * 1000;
+    const interval = Math.max(50, config.int('ratelimit.domain_wait_interval_milliseconds'));
+    while (Date.now() < deadline) {
+      await sleep(interval);
+      const cachedListRetry = await queryCache.getList(cacheKey);
+      if (cachedListRetry !== null) {
+        respond(ResponseFormatter.listPayload(cachedListRetry.detail, { cache: 'hit', cached_at: cachedListRetry.cached_at, cache_expires_at: cachedListRetry.cache_expires_at }));
         return;
       }
     }
 
-    const debug = config.bool('debug.enabled');
+    throw new RateLimitException('too many in-flight requests for the same query', 'too many requests');
+  }
+
+  try {
+    const cachedListAfterLock = await queryCache.getList(cacheKey);
+    if (cachedListAfterLock !== null) {
+      respond(ResponseFormatter.listPayload(cachedListAfterLock.detail, { cache: 'hit', cached_at: cachedListAfterLock.cached_at, cache_expires_at: cachedListAfterLock.cache_expires_at }));
+      return;
+    }
+
+    await guard.assertAllowed(ip, keyword);
+
+    const service = new MiitQueryService();
+    const result = await service.queryList(keyword, debug);
+    await queryCache.putList(cacheKey, result);
+
+    if (result.unitName && result.mainLicence) {
+      const altKey = `list:${cacheKey === `list:${result.unitName}` ? result.mainLicence : result.unitName}`;
+      if (altKey !== cacheKey) {
+        await queryCache.putList(altKey, result).catch((err) => {
+          Logger.error('failed to write alt list cache', { detail: err?.message ?? '' }).catch(() => {});
+        });
+      }
+    }
+
+    if (Array.isArray(result.records)) {
+      await Promise.all(result.records.map((record) => {
+        const detail = {
+          domain: record.domain,
+          unitName: record.unitName,
+          mainLicence: record.mainLicence,
+          serviceLicence: record.serviceLicence,
+          natureName: record.natureName,
+          leaderName: record.leaderName,
+          updateRecordTime: record.updateRecordTime,
+        };
+        return detail.domain && detail.unitName
+          ? queryCache.putSuccess(detail.domain, detail).catch(() => {})
+          : Promise.resolve();
+      }));
+    }
+
+    respond(ResponseFormatter.listPayload(result));
+  } finally {
+    await mutex.release();
+  }
+}
+
+async function handleDomainQuery(domain, respond, ip, debug) {
+  const config = getConfig();
+  const queryCache = new QueryCache(await getCacheStore(), config);
+  const guard = new QueryGuard(await getRateLimiter(), config);
+  const lockProvider = new DomainQueryLock(await getLockProvider());
+
+  if (await sendCachedSuccess(respond, queryCache, domain)) {
+    return null;
+  }
+  if (await sendCachedMiss(respond, queryCache, domain)) {
+    return null;
+  }
+
+  const mutex = await lockProvider.mutexFor(domain);
+  if (!(await mutex.tryAcquire())) {
+    const deadline = Date.now() + config.int('ratelimit.domain_wait_timeout_seconds') * 1000;
+    const interval = Math.max(50, config.int('ratelimit.domain_wait_interval_milliseconds'));
+    while (Date.now() < deadline) {
+      await sleep(interval);
+      if (await sendCachedSuccess(respond, queryCache, domain)) {
+        return null;
+      }
+      if (await sendCachedMiss(respond, queryCache, domain)) {
+        return null;
+      }
+    }
+
+    throw new RateLimitException('too many in-flight requests for the same domain', 'too many requests');
+  }
+
+  if (await sendCachedSuccess(respond, queryCache, domain)) {
+    await mutex.release();
+    return null;
+  }
+  if (await sendCachedMiss(respond, queryCache, domain)) {
+    await mutex.release();
+    return null;
+  }
+
+  await guard.assertAllowed(ip, domain);
+
+  const service = new MiitQueryService();
+  const detail = await service.queryDomainDetail(domain, debug);
+  const payload = ResponseFormatter.successPayload(detail);
+  await queryCache.putSuccess(domain, detail);
+
+  respond(payload);
+  return { mutex, queryCache, guard };
+}
+
+export async function handleQuery(request, response) {
+  const rawDomain = queryParamLast(request.url, 'domain') ?? '';
+  const rawUnitName = queryParamLast(request.url, 'unitName') ?? '';
+  const rawLicence = queryParamLast(request.url, 'licence') ?? '';
+  const ip = ClientIp.detect(request);
+  const start = Date.now();
+  const queryKey = rawUnitName || rawLicence || rawDomain || '-';
+
+  const respond = buildRespond(response, start, { ip, queryKey });
+  let domain = '';
+  let mutex = null;
+  let queryCache = null;
+  let guard = null;
+
+  try {
+    EnvironmentGuard.assertRuntimeReady();
+    await EnvironmentGuard.assertSharpReady();
+
+    if (!checkAuth(request, respond)) {
+      return;
+    }
+
+    const debug = getConfig().bool('debug.enabled');
 
     if (rawUnitName !== '' || rawLicence !== '') {
-      const keyword = rawUnitName || rawLicence;
-      queryCache = new QueryCache(await getCacheStore(), config);
-      guard = new QueryGuard(await getRateLimiter(), config);
-      const domainQueryLock = new DomainQueryLock(await getLockProvider());
-      const cacheKey = `list:${keyword}`;
-
-      const cachedList = await queryCache.getList(cacheKey);
-      if (cachedList !== null) {
-        respond(ResponseFormatter.listPayload(cachedList.detail, { cache: 'hit', cached_at: cachedList.cached_at, cache_expires_at: cachedList.cache_expires_at }));
-        return;
-      }
-
-      const mutex = await domainQueryLock.mutexFor(cacheKey);
-      if (!(await mutex.tryAcquire())) {
-        const deadline = Date.now() + config.int('ratelimit.domain_wait_timeout_seconds') * 1000;
-        const interval = Math.max(50, config.int('ratelimit.domain_wait_interval_milliseconds'));
-        while (Date.now() < deadline) {
-          await sleep(interval);
-          const cachedListRetry = await queryCache.getList(cacheKey);
-          if (cachedListRetry !== null) {
-            respond(ResponseFormatter.listPayload(cachedListRetry.detail, { cache: 'hit', cached_at: cachedListRetry.cached_at, cache_expires_at: cachedListRetry.cache_expires_at }));
-            return;
-          }
-        }
-
-        throw new RateLimitException('too many in-flight requests for the same query', 'too many requests');
-      }
-
-      try {
-        const cachedListAfterLock = await queryCache.getList(cacheKey);
-        if (cachedListAfterLock !== null) {
-          respond(ResponseFormatter.listPayload(cachedListAfterLock.detail, { cache: 'hit', cached_at: cachedListAfterLock.cached_at, cache_expires_at: cachedListAfterLock.cache_expires_at }));
-          return;
-        }
-
-        await guard.assertAllowed(ip, keyword);
-
-        const service = new MiitQueryService();
-        const result = await service.queryList(keyword, debug);
-        await queryCache.putList(cacheKey, result);
-
-        if (result.unitName && result.mainLicence) {
-          const altKey = `list:${cacheKey === `list:${result.unitName}` ? result.mainLicence : result.unitName}`;
-          if (altKey !== cacheKey) {
-            await queryCache.putList(altKey, result).catch((err) => {
-              Logger.error('failed to write alt list cache', { detail: err?.message ?? '' }).catch(() => {});
-            });
-          }
-        }
-
-        if (Array.isArray(result.records)) {
-          await Promise.all(result.records.map((record) => {
-            const detail = {
-              domain: record.domain,
-              unitName: record.unitName,
-              mainLicence: record.mainLicence,
-              serviceLicence: record.serviceLicence,
-              natureName: record.natureName,
-              leaderName: record.leaderName,
-              updateRecordTime: record.updateRecordTime,
-            };
-            return detail.domain && detail.unitName
-              ? queryCache.putSuccess(detail.domain, detail).catch(() => {})
-              : Promise.resolve();
-          }));
-        }
-
-        respond(ResponseFormatter.listPayload(result));
-      } finally {
-        await mutex.release();
-      }
+      await handleListQuery(rawUnitName || rawLicence, respond, ip, debug);
       return;
     }
 
     const normalizer = new DomainNormalizer();
-    queryCache = new QueryCache(await getCacheStore(), config);
-    guard = new QueryGuard(await getRateLimiter(), config);
-    const domainQueryLock = new DomainQueryLock(await getLockProvider());
-
     domain = normalizer.normalize(rawDomain);
 
-    if (await sendCachedSuccess(respond, queryCache, domain)) {
-      return;
+    const result = await handleDomainQuery(domain, respond, ip, debug);
+    if (result !== null) {
+      mutex = result.mutex;
+      queryCache = result.queryCache;
+      guard = result.guard;
     }
-    if (await sendCachedMiss(respond, queryCache, domain)) {
-      return;
-    }
-
-    mutex = await domainQueryLock.mutexFor(domain);
-    if (!(await mutex.tryAcquire())) {
-      const deadline = Date.now() + config.int('ratelimit.domain_wait_timeout_seconds') * 1000;
-      const interval = Math.max(50, config.int('ratelimit.domain_wait_interval_milliseconds'));
-      while (Date.now() < deadline) {
-        await sleep(interval);
-        if (await sendCachedSuccess(respond, queryCache, domain)) {
-          return;
-        }
-        if (await sendCachedMiss(respond, queryCache, domain)) {
-          return;
-        }
-      }
-
-      throw new RateLimitException('too many in-flight requests for the same domain', 'too many requests');
-    }
-
-    if (await sendCachedSuccess(respond, queryCache, domain)) {
-      return;
-    }
-    if (await sendCachedMiss(respond, queryCache, domain)) {
-      return;
-    }
-
-    await guard.assertAllowed(ip, domain);
-
-    const service = new MiitQueryService();
-    const detail = await service.queryDomainDetail(domain, debug);
-    const payload = ResponseFormatter.successPayload(detail);
-    await queryCache.putSuccess(domain, detail);
-
-    respond(payload);
   } catch (error) {
     await handleError(error, respond, {
       ip,
@@ -419,23 +451,5 @@ async function handleError(error, respond, context) {
 
 function queryParamLast(requestUrl, name) {
   const url = new URL(requestUrl, 'http://localhost');
-  const lowerName = name.toLowerCase();
-  let lastValue = null;
-  for (const [key, value] of url.searchParams.entries()) {
-    if (key.toLowerCase() === lowerName) {
-      lastValue = value;
-    }
-  }
-  return lastValue;
-}
-
-function readHeader(request, name) {
-  const key = name.toLowerCase();
-  for (const [header, value] of Object.entries(request.headers)) {
-    if (header.toLowerCase() === key) {
-      return String(value);
-    }
-  }
-
-  return '';
+  return url.searchParams.get(name);
 }
