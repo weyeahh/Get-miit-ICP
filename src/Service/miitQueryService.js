@@ -62,7 +62,7 @@ export class MiitQueryService {
     return { client, icpApi, debug };
   }
 
-  async queryDomainDetail(domain, debug = false) {
+  async queryDomainDetail(domain, debug = false, { matchByDomain = true } = {}) {
     domain = String(domain).trim();
     if (domain === '') {
       throw new MiitException('domain is required');
@@ -87,7 +87,9 @@ export class MiitQueryService {
       list_count: list.length,
     });
 
-    const item = await this.selectBestMatch(list, domain, debug);
+    const item = matchByDomain
+      ? await this.selectBestMatch(list, domain, debug)
+      : this.selectFirstValid(list, domain, debug);
     const identifiers = this.extractIdentifiers(item);
     const mainId = identifiers.mainId;
     const domainId = identifiers.domainId;
@@ -272,6 +274,23 @@ export class MiitQueryService {
     });
 
     throw new RecordNotFoundException(`no exact ICP record found for ${domain}`, false);
+  }
+
+  selectFirstValid(list, keyword) {
+    let fallback = null;
+    for (const candidate of list) {
+      if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        continue;
+      }
+      if (fallback === null) {
+        fallback = candidate;
+      }
+      const identifiers = this.extractIdentifiers(candidate);
+      if (this.identifiersAreValid(identifiers)) {
+        return candidate;
+      }
+    }
+    return fallback;
   }
 
   candidateMatchesDomain(candidate, domain) {

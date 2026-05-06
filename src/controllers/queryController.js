@@ -177,7 +177,7 @@ async function handleListQuery(keyword, respond, ip, debug) {
   }
 }
 
-async function handleDomainQuery(domain, respond, ip, debug) {
+async function handleDomainQuery(domain, respond, ip, debug, { matchByDomain = true } = {}) {
   const config = getConfig();
   const queryCache = new QueryCache(await getCacheStore(), config);
   const guard = new QueryGuard(await getRateLimiter(), config);
@@ -219,9 +219,9 @@ async function handleDomainQuery(domain, respond, ip, debug) {
   await guard.assertAllowed(ip, domain);
 
   const service = new MiitQueryService();
-  const detail = await service.queryDomainDetail(domain, debug);
+  const detail = await service.queryDomainDetail(domain, debug, { matchByDomain });
   const payload = ResponseFormatter.successPayload(detail);
-  await queryCache.putSuccess(domain, detail);
+  await queryCache.putSuccess(detail.domain, detail);
 
   respond(payload);
   return { mutex, queryCache, guard };
@@ -265,7 +265,7 @@ export async function handleQuery(request, response) {
 
       if (rawLicence !== '' && isServiceLicence(rawLicence)) {
         domain = rawLicence;
-        const result = await handleDomainQuery(domain, respond, ip, debug);
+        const result = await handleDomainQuery(domain, respond, ip, debug, { matchByDomain: false });
         if (result !== null) {
           mutex = result.mutex;
           queryCache = result.queryCache;
