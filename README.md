@@ -29,8 +29,6 @@
 
 ```text
 .
-|- public/
-|  `- index.js
 |- src/
 |  |- Api/
 |  |  |- authApi.js
@@ -72,7 +70,8 @@
 |  |  |- hash.js
 |  |  |- logger.js
 |  |  |- responseFormatter.js
-|  |  `- time.js
+|  |  |- time.js
+|  |  `- utils.js
 |  |- Validation/
 |  |  `- domainNormalizer.js
 |  |- app.js
