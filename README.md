@@ -332,7 +332,9 @@ Query Parameters（三选一）：
    按主体名（公司/组织全称）精确查询该主体下的所有备案域名/APP 信息（由于个人主体有重名可能性，所以不建议用于个人备案查询，仅适用于企业/组织为主体的查询）。
 
 3. `licence`
-   按备案号查询（如 `粤ICP备2025407341号`），返回该备案号下的所有域名信息。
+   按备案号查询。支持两种格式：
+   - **主体备案号**（如 `粤ICP备2025407341号`）：返回该主体下的所有域名列表，与 `unitName` 等效。
+   - **网站备案号**（如 `粤ICP备2025407341号-1`）：返回该网站对应的单条域名详情，与 `domain` 等效且共享缓存。
 
 三个参数互斥，优先级为 `unitName` > `licence` > `domain`。
 
@@ -413,6 +415,30 @@ HTTP status: `200`
 
 `data` 中 `UnitName`、`MainLicence` 等为主体公共信息，`Records` 为该主体下所有域名列表，每条包含 `domain` 和 `serviceLicence`。
 
+#### 网站备案号查询（单条）
+
+HTTP status: `200`
+
+```json
+{
+  "code": 200,
+  "message": "successful",
+  "cache": "miss",
+  "duration": "642ms",
+  "data": {
+    "Domain": "yunvon.cn",
+    "UnitName": "东莞市云上望远网络科技有限公司",
+    "MainLicence": "粤ICP备2025407341号",
+    "ServiceLicence": "粤ICP备2025407341号-1",
+    "NatureName": "企业",
+    "LeaderName": "",
+    "UpdateRecordTime": "2025-09-01 08:57:56"
+  }
+}
+```
+
+网站备案号查询返回单条域名详情，与 `domain` 查询共享缓存。例如先查询 `?licence=粤ICP备2025407341号-1` 后，再查询 `?domain=yunvon.cn` 会直接命中缓存。
+
 ### Error Response
 
 参数非法时，HTTP status: `400`
@@ -421,6 +447,16 @@ HTTP status: `200`
 {
   "code": 400,
   "message": "domain format is invalid",
+  "data": null
+}
+```
+
+域名误传入 `unitName` 或 `licence` 参数时，HTTP status: `400`
+
+```json
+{
+  "code": 400,
+  "message": "domain format input is not allowed for unitName/licence, use the domain parameter instead",
   "data": null
 }
 ```
