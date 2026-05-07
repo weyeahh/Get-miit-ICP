@@ -4,7 +4,7 @@ export class DomainNormalizer {
   normalize(input) {
     let domain = String(input).trim();
     if (domain === '') {
-      throw new ValidationException('domain parameter is required');
+      throw new ValidationException('Missing parameter domain');
     }
 
     if (/[\x00-\x1F\x7F\s]/u.test(domain)) {
@@ -13,7 +13,7 @@ export class DomainNormalizer {
 
     domain = domain.toLowerCase().replace(/\.+$/u, '');
     if (domain === '') {
-      throw new ValidationException('domain parameter is required');
+      throw new ValidationException('Missing parameter domain');
     }
 
     if (Buffer.byteLength(domain, 'utf8') > 253) {

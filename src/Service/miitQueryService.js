@@ -65,7 +65,7 @@ export class MiitQueryService {
   async queryDomainDetail(domain, debug = false, { matchByDomain = true } = {}) {
     domain = String(domain).trim();
     if (domain === '') {
-      throw new MiitException('domain is required');
+      throw new MiitException('Missing parameter domain');
     }
 
     const { icpApi } = await this.prepareAuthenticatedClient(debug);
@@ -173,7 +173,7 @@ export class MiitQueryService {
   async queryList(keyword, debug = false) {
     keyword = String(keyword).trim();
     if (keyword === '') {
-      throw new MiitException('keyword is required');
+      throw new MiitException('Missing parameter unitName or licence');
     }
 
     const { icpApi } = await this.prepareAuthenticatedClient(debug);
