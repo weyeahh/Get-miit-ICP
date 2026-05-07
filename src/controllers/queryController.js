@@ -473,7 +473,14 @@ async function handleError(error, respond, context) {
 
 function queryParamLast(requestUrl, name) {
   const url = new URL(requestUrl, 'http://localhost');
-  return url.searchParams.get(name);
+  const lowerName = name.toLowerCase();
+  let lastValue = null;
+  for (const [key, value] of url.searchParams.entries()) {
+    if (key.toLowerCase() === lowerName) {
+      lastValue = value;
+    }
+  }
+  return lastValue;
 }
 
 function looksLikeDomain(input) {
